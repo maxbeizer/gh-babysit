@@ -1,0 +1,1 @@
+[{"type":"required_status_checks","parameters":{"required_status_checks":[{"context":"ci/build","integration_id":15368},{"context":"rules-only","integration_id":42}]}},{"type":"non_fast_forward","parameters":{}}]

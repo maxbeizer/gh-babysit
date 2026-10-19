@@ -2,9 +2,42 @@ package app
 
 import (
 	"bytes"
+	"context"
+	"fmt"
 	"strings"
 	"testing"
+
+	"github.com/maxbeizer/gh-babysit/internal/process"
 )
+
+type runnerFunc func(context.Context, process.Request) (process.Result, error)
+
+func (f runnerFunc) Run(ctx context.Context, r process.Request) (process.Result, error) {
+	return f(ctx, r)
+}
+
+func successfulPreflightRunner(_ context.Context, r process.Request) (process.Result, error) {
+	command := r.Name + " " + strings.Join(r.Args, " ")
+	outputs := map[string]string{
+		"git rev-parse --show-toplevel": "/repo\n", "git remote get-url origin": "git@github.com:acme/widgets.git\n",
+		"git status --porcelain=v1 -z --untracked-files=all": "", "gh repo view --json nameWithOwner,url,viewerPermission": `{"nameWithOwner":"acme/widgets","viewerPermission":"WRITE"}`,
+		"gh pr view 123 --json number,url,baseRefName,headRefName,headRefOid,headRepository,headRepositoryOwner,isCrossRepository": `{"number":123,"url":"https://github.com/acme/widgets/pull/123","baseRefName":"main","headRefName":"topic","headRefOid":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","headRepository":{"name":"widgets"},"headRepositoryOwner":{"login":"acme"}}`,
+		"git symbolic-ref --quiet --short HEAD": "topic\n", "git rev-parse HEAD": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n",
+		"git config --get branch.topic.remote": "origin\n", "git rev-parse --abbrev-ref --symbolic-full-name @{push}": "origin/topic\n",
+		"git remote get-url --push origin": "git@github.com:acme/widgets.git\n", "git ls-files -s -z": "index\x00",
+	}
+	if command == "gh auth status --hostname github.com" {
+		return process.Result{}, nil
+	}
+	if command == "git config --get branch.topic.pushRemote" || command == "git config --get remote.pushDefault" {
+		return process.Result{}, fmt.Errorf("unset")
+	}
+	out, ok := outputs[command]
+	if !ok {
+		return process.Result{}, fmt.Errorf("unexpected command %s", command)
+	}
+	return process.Result{Stdout: []byte(out)}, nil
+}
 
 func TestParsePullRequestArgument(t *testing.T) {
 	tests := []struct {
@@ -33,13 +66,13 @@ func TestParsePullRequestArgument(t *testing.T) {
 
 func TestCommandAcceptsDocumentedSurface(t *testing.T) {
 	var out bytes.Buffer
-	cmd := NewCommand("dev")
+	cmd := NewCommandWithRunner("dev", runnerFunc(successfulPreflightRunner))
 	cmd.SetOut(&out)
 	cmd.SetArgs([]string{"123", "--auto", "--agent-command", "agent", "--poll-interval", "1s", "--appearance-timeout", "2s", "--timeout", "3s"})
 	if err := cmd.Execute(); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(out.String(), "not implemented yet") {
+	if !strings.Contains(out.String(), "Preflight passed") || !strings.Contains(out.String(), "not implemented yet") {
 		t.Fatalf("output = %q", out.String())
 	}
 }
