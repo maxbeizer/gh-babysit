@@ -66,7 +66,7 @@ func (b RESTBackend) ClassicRequirements(ctx context.Context, req Request) ([]Re
 	pages, err := b.API.Get(ctx, endpoint)
 	if err != nil {
 		var status *HTTPStatusError
-		if errors.As(err, &status) && status.Status == 404 {
+		if errors.As(err, &status) && status.Status == 404 && strings.Contains(strings.ToLower(status.Body), "branch not protected") {
 			return nil, ErrNoClassicProtection
 		}
 		return nil, err

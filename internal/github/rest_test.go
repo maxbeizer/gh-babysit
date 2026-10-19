@@ -132,6 +132,24 @@ func TestProviderDistinguishesAuthoritativeZeroFromMissingSuite(t *testing.T) {
 	}
 }
 
+func TestClassicProtectionOnlyAcceptsSpecificUnprotected404(t *testing.T) {
+	backend := RESTBackend{API: fixtureAPI{errors: map[string]error{
+		"required_status_checks": &HTTPStatusError{Status: 404, Body: "Not Found"},
+	}}}
+	_, err := backend.ClassicRequirements(context.Background(), Request{Owner: "o", Repository: "r", BaseBranch: "main"})
+	if err == nil || errors.Is(err, ErrNoClassicProtection) {
+		t.Fatalf("ambiguous 404 must fail safe, got %v", err)
+	}
+
+	backend.API = fixtureAPI{errors: map[string]error{
+		"required_status_checks": &HTTPStatusError{Status: 404, Body: "gh: Branch not protected (HTTP 404)"},
+	}}
+	_, err = backend.ClassicRequirements(context.Background(), Request{Owner: "o", Repository: "r", BaseBranch: "main"})
+	if !errors.Is(err, ErrNoClassicProtection) {
+		t.Fatalf("specific unprotected response = %v, want ErrNoClassicProtection", err)
+	}
+}
+
 func TestProviderFailsSafeWhenRulesetsCannotBeProven(t *testing.T) {
 	api := fixtureAPI{errors: map[string]error{
 		"required_status_checks": ErrNoClassicProtection,
