@@ -7,6 +7,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/maxbeizer/gh-babysit/internal/preflight"
+	"github.com/maxbeizer/gh-babysit/internal/process"
 	"github.com/spf13/cobra"
 )
 
@@ -37,6 +39,10 @@ type Options struct {
 }
 
 func NewCommand(version string) *cobra.Command {
+	return NewCommandWithRunner(version, process.ExecRunner{})
+}
+
+func NewCommandWithRunner(version string, runner process.Runner) *cobra.Command {
 	o := Options{}
 	cmd := &cobra.Command{
 		Use:          "gh-babysit [<pr-number-or-url>]",
@@ -51,7 +57,11 @@ func NewCommand(version string) *cobra.Command {
 				}
 				o.PullRequest = args[0]
 			}
-			fmt.Fprintln(cmd.OutOrStdout(), "gh babysit foundation is installed; CI watching is not implemented yet.")
+			result, err := (preflight.Checker{Runner: runner}).Run(cmd.Context(), o.PullRequest)
+			if err != nil {
+				return err
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "Preflight passed for PR #%d (%s) at %.12s. CI watching is not implemented yet.\n", result.PullRequest.Number, result.PullRequest.URL, result.Baseline.HeadSHA)
 			return nil
 		},
 	}
