@@ -3,20 +3,19 @@ package main
 import (
 	"bytes"
 	"testing"
+
+	"github.com/maxbeizer/gh-babysit/internal/app"
 )
 
 func TestRootCommandVersion(t *testing.T) {
 	var stdout bytes.Buffer
-	cmd := newRootCmd("v1.2.3")
+	cmd := app.NewCommand("v1.2.3")
 	cmd.SetOut(&stdout)
 	cmd.SetArgs([]string{"--version"})
-
 	if err := cmd.Execute(); err != nil {
 		t.Fatalf("Execute() error = %v", err)
 	}
-
-	const want = "gh-extension-template version v1.2.3\n"
-	if got := stdout.String(); got != want {
+	if got, want := stdout.String(), "gh-babysit version v1.2.3\n"; got != want {
 		t.Fatalf("version output = %q, want %q", got, want)
 	}
 }

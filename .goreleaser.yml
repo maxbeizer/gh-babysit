@@ -1,9 +1,9 @@
 version: 2
 
-project_name: gh-extension-template
+project_name: gh-babysit
 
 builds:
-  - binary: gh-extension-template
+  - binary: gh-babysit
     goos:
       - darwin
       - linux

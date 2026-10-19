@@ -2,50 +2,48 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
-	"log"
 	"os"
 	"os/signal"
 	"syscall"
 
-	"github.com/spf13/cobra"
+	"github.com/maxbeizer/gh-babysit/internal/app"
+	"github.com/maxbeizer/gh-babysit/internal/exitcode"
 )
 
 var version = "dev"
 
-func newRootCmd(commandVersion string) *cobra.Command {
-	return &cobra.Command{
-		Use:     "gh-extension-template",
-		Short:   "TODO: describe your extension",
-		Version: commandVersion,
-		RunE: func(cmd *cobra.Command, args []string) error {
-			fmt.Fprintln(cmd.OutOrStdout(), "Hello from gh-extension-template! Replace this with your implementation.")
-			return nil
-		},
+func run(ctx context.Context, args []string) int {
+	cmd := app.NewCommand(version)
+	cmd.SetArgs(args)
+	if err := cmd.ExecuteContext(ctx); err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		var categorized *exitcode.Error
+		if errors.As(err, &categorized) {
+			return exitcode.Code(err)
+		}
+		if cause := context.Cause(ctx); cause != nil {
+			return exitcode.Code(cause)
+		}
+		return exitcode.Code(exitcode.New(exitcode.Usage, err))
 	}
+	return exitcode.Code(context.Cause(ctx))
 }
 
 func main() {
-	userMessages := log.New(os.Stderr, "", 0)
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	c := make(chan os.Signal, 1)
-	signal.Notify(c, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
-	defer func() {
-		signal.Stop(c)
-		cancel()
-	}()
-
+	ctx, cancel := context.WithCancelCause(context.Background())
+	signals := make(chan os.Signal, 1)
+	signal.Notify(signals, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
+	defer signal.Stop(signals)
 	go func() {
-		for sig := range c {
-			userMessages.Printf("received signal %v", sig)
-			cancel()
+		sig := <-signals
+		category := exitcode.SafetyStop
+		if sig == syscall.SIGINT {
+			category = exitcode.Interrupted
 		}
+		cancel(exitcode.New(category, fmt.Errorf("received signal %v", sig)))
 	}()
-
-	if err := newRootCmd(version).ExecuteContext(ctx); err != nil {
-		userMessages.Printf("error: %v", err)
-		os.Exit(1)
-	}
+	defer cancel(nil)
+	os.Exit(run(ctx, os.Args[1:]))
 }

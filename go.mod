@@ -1,4 +1,4 @@
-module github.com/maxbeizer/gh-extension-template
+module github.com/maxbeizer/gh-babysit
 
 go 1.24.13
 
