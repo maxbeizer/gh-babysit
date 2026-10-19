@@ -128,6 +128,10 @@ func (c Checker) Run(ctx context.Context, argument string) (Result, error) {
 	}
 	headRepo := p.HeadRepositoryOwner.Login + "/" + p.HeadRepository.Name
 	pr := domain.PullRequest{Host: host, Repository: repo.NameWithOwner, Number: p.Number, URL: p.URL, BaseBranch: p.BaseRefName, HeadBranch: p.HeadRefName, HeadRepository: headRepo, HeadSHA: p.HeadRefOid}
+	prHost, prRepo, parseErr := repositoryFromPullRequestURL(p.URL)
+	if parseErr != nil || !strings.EqualFold(prHost, host) || !strings.EqualFold(prRepo, repo.NameWithOwner) {
+		return Result{}, safety(StateMismatch, p.Number, p.HeadRefOid, "select a PR from "+host+"/"+repo.NameWithOwner, parseErr)
+	}
 	if p.IsCrossRepository || !strings.EqualFold(headRepo, repo.NameWithOwner) {
 		return Result{}, safety(ForkPullRequest, p.Number, p.HeadRefOid, "check out a same-repository PR; fork PRs are not supported", nil)
 	}
@@ -152,6 +156,10 @@ func (c Checker) Run(ctx context.Context, argument string) (Result, error) {
 	pushRemote := c.pushRemote(ctx, root, branch)
 	if pushRemote == "" {
 		return Result{}, safety(UnsafeRemote, p.Number, p.HeadRefOid, "configure a push remote for branch "+branch, nil)
+	}
+	pushRef, err := c.run(ctx, root, "git", "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{push}")
+	if err != nil || strings.TrimSpace(string(pushRef)) != pushRemote+"/"+branch {
+		return Result{}, safety(UnsafeRemote, p.Number, p.HeadRefOid, "configure the branch to push to "+pushRemote+"/"+branch, err)
 	}
 	pushURL, err := c.run(ctx, root, "git", "remote", "get-url", "--push", pushRemote)
 	if err != nil {
@@ -189,6 +197,18 @@ func usage(k Kind, action string, err error) error {
 }
 func safety(k Kind, pr int, sha, action string, err error) error {
 	return exitcode.New(exitcode.SafetyStop, &Error{Kind: k, PR: pr, SHA: sha, Action: action, Err: err})
+}
+
+func repositoryFromPullRequestURL(raw string) (string, string, error) {
+	u, err := url.Parse(raw)
+	if err != nil || u.Hostname() == "" {
+		return "", "", fmt.Errorf("invalid pull request URL %q", raw)
+	}
+	parts := strings.Split(strings.Trim(u.Path, "/"), "/")
+	if len(parts) != 4 || parts[2] != "pull" {
+		return "", "", fmt.Errorf("invalid pull request URL %q", raw)
+	}
+	return u.Hostname(), parts[0] + "/" + parts[1], nil
 }
 
 func repositoryFromRemote(raw string) (string, string, error) {

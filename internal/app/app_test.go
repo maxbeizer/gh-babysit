@@ -23,7 +23,8 @@ func successfulPreflightRunner(_ context.Context, r process.Request) (process.Re
 		"git status --porcelain=v1 -z --untracked-files=all": "", "gh repo view --json nameWithOwner,url,viewerPermission": `{"nameWithOwner":"acme/widgets","viewerPermission":"WRITE"}`,
 		"gh pr view 123 --json number,url,baseRefName,headRefName,headRefOid,headRepository,headRepositoryOwner,isCrossRepository": `{"number":123,"url":"https://github.com/acme/widgets/pull/123","baseRefName":"main","headRefName":"topic","headRefOid":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","headRepository":{"name":"widgets"},"headRepositoryOwner":{"login":"acme"}}`,
 		"git symbolic-ref --quiet --short HEAD": "topic\n", "git rev-parse HEAD": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n",
-		"git config --get branch.topic.remote": "origin\n", "git remote get-url --push origin": "git@github.com:acme/widgets.git\n", "git ls-files -s -z": "index\x00",
+		"git config --get branch.topic.remote": "origin\n", "git rev-parse --abbrev-ref --symbolic-full-name @{push}": "origin/topic\n",
+		"git remote get-url --push origin": "git@github.com:acme/widgets.git\n", "git ls-files -s -z": "index\x00",
 	}
 	if command == "gh auth status --hostname github.com" {
 		return process.Result{}, nil

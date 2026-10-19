@@ -39,13 +39,14 @@ func goodResponses() map[string]response {
 		key("git", "status", "--porcelain=v1", "-z", "--untracked-files=all"):     {},
 		key("gh", "repo", "view", "--json", "nameWithOwner,url,viewerPermission"): {out: `{"nameWithOwner":"acme/widgets","url":"https://github.com/acme/widgets","viewerPermission":"WRITE"}`},
 		key("gh", "pr", "view", "12", "--json", "number,url,baseRefName,headRefName,headRefOid,headRepository,headRepositoryOwner,isCrossRepository"): {out: `{"number":12,"url":"https://github.com/acme/widgets/pull/12","baseRefName":"main","headRefName":"topic","headRefOid":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","headRepository":{"name":"widgets"},"headRepositoryOwner":{"login":"acme"},"isCrossRepository":false}`},
-		key("git", "symbolic-ref", "--quiet", "--short", "HEAD"): {out: "topic\n"},
-		key("git", "rev-parse", "HEAD"):                          {out: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n"},
-		key("git", "config", "--get", "branch.topic.pushRemote"): {err: errors.New("unset")},
-		key("git", "config", "--get", "remote.pushDefault"):      {err: errors.New("unset")},
-		key("git", "config", "--get", "branch.topic.remote"):     {out: "origin\n"},
-		key("git", "remote", "get-url", "--push", "origin"):      {out: "https://github.com/acme/widgets.git\n"},
-		key("git", "ls-files", "-s", "-z"):                       {out: "100644 abc 0\tREADME.md\x00"},
+		key("git", "symbolic-ref", "--quiet", "--short", "HEAD"):                   {out: "topic\n"},
+		key("git", "rev-parse", "HEAD"):                                            {out: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n"},
+		key("git", "config", "--get", "branch.topic.pushRemote"):                   {err: errors.New("unset")},
+		key("git", "config", "--get", "remote.pushDefault"):                        {err: errors.New("unset")},
+		key("git", "config", "--get", "branch.topic.remote"):                       {out: "origin\n"},
+		key("git", "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{push}"): {out: "origin/topic\n"},
+		key("git", "remote", "get-url", "--push", "origin"):                        {out: "https://github.com/acme/widgets.git\n"},
+		key("git", "ls-files", "-s", "-z"):                                         {out: "100644 abc 0\tREADME.md\x00"},
 	}
 }
 
@@ -81,9 +82,11 @@ func TestSafetyRejectionsAreTypedAndActionable(t *testing.T) {
 		kind          Kind
 	}{
 		{"dirty", key("git", "status", "--porcelain=v1", "-z", "--untracked-files=all"), response{out: " M README.md\x00?? new.txt\x00"}, DirtyWorktree},
-		{"fork", key("gh", "pr", "view", "12", "--json", "number,url,baseRefName,headRefName,headRefOid,headRepository,headRepositoryOwner,isCrossRepository"), response{out: `{"number":12,"url":"u","baseRefName":"main","headRefName":"topic","headRefOid":"abc","headRepository":{"name":"widgets"},"headRepositoryOwner":{"login":"other"},"isCrossRepository":true}`}, ForkPullRequest},
+		{"wrong PR repository", key("gh", "pr", "view", "12", "--json", "number,url,baseRefName,headRefName,headRefOid,headRepository,headRepositoryOwner,isCrossRepository"), response{out: `{"number":12,"url":"https://github.com/other/widgets/pull/12","baseRefName":"main","headRefName":"topic","headRefOid":"abc","headRepository":{"name":"widgets"},"headRepositoryOwner":{"login":"other"}}`}, StateMismatch},
+		{"fork", key("gh", "pr", "view", "12", "--json", "number,url,baseRefName,headRefName,headRefOid,headRepository,headRepositoryOwner,isCrossRepository"), response{out: `{"number":12,"url":"https://github.com/acme/widgets/pull/12","baseRefName":"main","headRefName":"topic","headRefOid":"abc","headRepository":{"name":"widgets"},"headRepositoryOwner":{"login":"other"},"isCrossRepository":true}`}, ForkPullRequest},
 		{"detached", key("git", "symbolic-ref", "--quiet", "--short", "HEAD"), response{err: errors.New("detached")}, DetachedHead},
 		{"head mismatch", key("git", "rev-parse", "HEAD"), response{out: "bbbb\n"}, StateMismatch},
+		{"wrong push branch", key("git", "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{push}"), response{out: "origin/other\n"}, UnsafeRemote},
 		{"wrong push remote", key("git", "remote", "get-url", "--push", "origin"), response{out: "git@github.com:acme/other.git\n"}, UnsafeRemote},
 		{"permission", key("gh", "repo", "view", "--json", "nameWithOwner,url,viewerPermission"), response{out: `{"nameWithOwner":"acme/widgets","viewerPermission":"READ"}`}, PermissionDenied},
 	}
