@@ -24,13 +24,15 @@ func TestNormalize(t *testing.T) {
 
 func TestNormalizeRejectsInvalidResponses(t *testing.T) {
 	tests := map[string]string{
-		"prose":          "Here is the result: " + validOutcome,
-		"trailing value": validOutcome + `{}`,
-		"unknown field":  strings.Replace(validOutcome, `"summary":`, `"extra":true,"summary":`, 1),
-		"missing field":  strings.Replace(validOutcome, `,"summary":"a test is stale"`, "", 1),
-		"bad enum":       strings.Replace(validOutcome, "code_fixable", "certainly_broken", 1),
-		"empty command":  strings.Replace(validOutcome, `[["go","test","./..."]]`, `[[]]`, 1),
-		"wrong version":  strings.Replace(validOutcome, `"schema_version":1`, `"schema_version":2`, 1),
+		"prose":              "Here is the result: " + validOutcome,
+		"trailing value":     validOutcome + `{}`,
+		"unknown field":      strings.Replace(validOutcome, `"summary":`, `"extra":true,"summary":`, 1),
+		"missing field":      strings.Replace(validOutcome, `,"summary":"a test is stale"`, "", 1),
+		"bad enum":           strings.Replace(validOutcome, "code_fixable", "certainly_broken", 1),
+		"empty command":      strings.Replace(validOutcome, `[["go","test","./..."]]`, `[[]]`, 1),
+		"wrong version":      strings.Replace(validOutcome, `"schema_version":1`, `"schema_version":2`, 1),
+		"null plan item":     strings.Replace(validOutcome, `["edit test"]`, `[null]`, 1),
+		"null relevant file": strings.Replace(validOutcome, `["x_test.go"]`, `[null]`, 1),
 	}
 	for name, response := range tests {
 		t.Run(name, func(t *testing.T) {

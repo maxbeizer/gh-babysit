@@ -58,7 +58,7 @@ func TestFixInvocationHasNoShellAndExplicitWritePermission(t *testing.T) {
 		t.Fatal(err)
 	}
 	args := strings.Join(runner.calls[1].args, " ")
-	for _, want := range []string{"--excluded-tools=shell", "--allow-tool=write", "--no-ask-user", "--no-custom-instructions", "--disable-builtin-mcps"} {
+	for _, want := range []string{"--available-tools glob view apply_patch", "--allow-tool=write", "--no-ask-user", "--no-custom-instructions", "--disable-builtin-mcps"} {
 		if !strings.Contains(args, want) {
 			t.Errorf("argv missing %q: %s", want, args)
 		}
@@ -102,8 +102,90 @@ func TestDiagnosisUsesDetachedWorktreeAndVerifiesRealWorkspace(t *testing.T) {
 	if statusCalls != 2 {
 		t.Fatalf("workspace status checked %d times, want 2", statusCalls)
 	}
-	if !strings.Contains(joined, "--deny-tool=write") {
-		t.Fatal("diagnosis was not denied write capability")
+	if strings.Contains(joined, "apply_patch") || strings.Contains(joined, "--allow-tool=write") {
+		t.Fatal("diagnosis was given write capability")
+	}
+}
+
+func TestCleanupFailureIsJoinedWithInvocationFailure(t *testing.T) {
+	runner := &fakeRunner{run: func(_ context.Context, request process.Request) (process.Result, error) {
+		if request.Name == "copilot" && request.Args[0] == "--version" {
+			return process.Result{Stdout: []byte("GitHub Copilot CLI 1.0.96\n")}, nil
+		}
+		if request.Name == "copilot" {
+			return process.Result{}, errors.New("invocation failed")
+		}
+		if request.Args[0] == "rev-parse" {
+			return process.Result{Stdout: []byte("abc\n")}, nil
+		}
+		if request.Args[0] == "status" {
+			return process.Result{}, nil
+		}
+		if request.Args[0] == "worktree" && request.Args[1] == "remove" {
+			return process.Result{}, errors.New("cleanup failed")
+		}
+		return process.Result{}, nil
+	}}
+	_, err := (Adapter{Runner: runner, TempDir: t.TempDir()}).Run(context.Background(), agent.Request{Mode: agent.Diagnose, Workspace: "/repo", RecordedSHA: "abc"})
+	if err == nil || !strings.Contains(err.Error(), "invocation failed") || !strings.Contains(err.Error(), "cleanup failed") {
+		t.Fatalf("errors were not joined: %v", err)
+	}
+}
+
+func TestCleanupHasIndependentTimeout(t *testing.T) {
+	runner := &fakeRunner{run: func(ctx context.Context, request process.Request) (process.Result, error) {
+		if request.Name == "copilot" && request.Args[0] == "--version" {
+			return process.Result{Stdout: []byte("GitHub Copilot CLI 1.0.96\n")}, nil
+		}
+		if request.Name == "copilot" {
+			return process.Result{Stdout: []byte(validOutcome)}, nil
+		}
+		if request.Args[0] == "rev-parse" {
+			return process.Result{Stdout: []byte("abc\n")}, nil
+		}
+		if request.Args[0] == "status" {
+			return process.Result{}, nil
+		}
+		if request.Args[0] == "worktree" && request.Args[1] == "remove" {
+			<-ctx.Done()
+			return process.Result{}, ctx.Err()
+		}
+		return process.Result{}, nil
+	}}
+	_, err := (Adapter{Runner: runner, CleanupTimeout: time.Millisecond, TempDir: t.TempDir()}).Run(context.Background(), agent.Request{Mode: agent.Diagnose, Workspace: "/repo", RecordedSHA: "abc"})
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("got %v", err)
+	}
+}
+
+func TestTimeoutCoversProbe(t *testing.T) {
+	runner := &fakeRunner{run: func(ctx context.Context, _ process.Request) (process.Result, error) {
+		<-ctx.Done()
+		return process.Result{}, ctx.Err()
+	}}
+	_, err := (Adapter{Runner: runner, Timeout: time.Millisecond}).Run(context.Background(), agent.Request{Mode: agent.Fix, Workspace: "/repo"})
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("got %v", err)
+	}
+}
+
+func TestTimeoutCoversWorktreeSetup(t *testing.T) {
+	runner := &fakeRunner{run: func(ctx context.Context, request process.Request) (process.Result, error) {
+		if request.Name == "copilot" {
+			return process.Result{Stdout: []byte("GitHub Copilot CLI 1.0.96\n")}, nil
+		}
+		if request.Args[0] == "rev-parse" {
+			return process.Result{Stdout: []byte("abc\n")}, nil
+		}
+		if request.Args[0] == "status" {
+			return process.Result{}, nil
+		}
+		<-ctx.Done()
+		return process.Result{}, ctx.Err()
+	}}
+	_, err := (Adapter{Runner: runner, Timeout: time.Millisecond, TempDir: t.TempDir()}).Run(context.Background(), agent.Request{Mode: agent.Diagnose, Workspace: "/repo", RecordedSHA: "abc"})
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("got %v", err)
 	}
 }
 

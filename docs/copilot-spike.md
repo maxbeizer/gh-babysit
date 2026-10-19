@@ -18,12 +18,12 @@ Both modes use this base invocation (the prompt is passed as one argv value):
 copilot -C <workspace> -p <prompt> --silent --stream off \
   --no-ask-user --no-auto-update --no-custom-instructions \
   --disable-builtin-mcps --disallow-temp-dir --output-format text \
-  --excluded-tools=shell
+  --available-tools glob view [apply_patch]
 ```
 
-Diagnosis adds `--deny-tool=write`. Fix adds `--allow-tool=write`. It deliberately does **not** use `--allow-all-tools`, `--allow-all-paths`, or URL permissions. The process environment removes Git redirection variables and `COPILOT_ALLOW_ALL`, disables auto-update and tgrep, and preserves the remaining user environment needed for CLI authentication.
+Diagnosis allows only `glob` and `view`. Fix additionally allows `apply_patch` and adds `--allow-tool=write`. The allowlist also excludes every user-configured MCP tool; `--disable-builtin-mcps` is defense in depth. The adapter deliberately does **not** use `--allow-all-tools`, `--allow-all-paths`, or URL permissions. The process environment removes Git redirection variables and `COPILOT_ALLOW_ALL`, disables auto-update and tgrep, and preserves the remaining user environment needed for CLI authentication.
 
-The shell tool is absent in fix mode, so the agent cannot invoke `git` (directly or through another shell), `gh`, build commands, commit, push, reset, rebase, or hooks. Validation is only recommended as structured argv and will be run later by the orchestrator's separate policy boundary. Built-in file editing remains available. This is stronger and less bypass-prone than command-name deny patterns.
+All command-execution tools are absent in fix mode, so the agent cannot invoke `git` (directly or through another shell), `gh`, build commands, commit, push, reset, rebase, or hooks. Validation is only recommended as structured argv and will be run later by the orchestrator's separate policy boundary. Built-in file editing remains available. This is stronger and less bypass-prone than command-name deny patterns.
 
 ## Isolation decision
 
@@ -46,12 +46,12 @@ A synthetic repository with 10,000 tracked 1 KiB files was measured on the devel
 ## Acceptance evidence
 
 1. **Noninteractive/version:** `TestProbe` covers accepted, old, future-major, and malformed versions. A real `-p --silent --stream off --no-ask-user` run exited without interaction on 1.0.96-2.
-2. **Read-only diagnosis:** a disposable repository run with `--excluded-tools=shell --deny-tool=write` returned a diagnosis and left `git status --porcelain=v1` unchanged. `TestDiagnosisUsesDetachedWorktreeAndVerifiesRealWorkspace` proves the additional worktree and real-checkout postcondition.
+2. **Read-only diagnosis:** a disposable repository run with `--available-tools glob view` returned a diagnosis and left `git status --porcelain=v1` unchanged. `TestDiagnosisUsesDetachedWorktreeAndVerifiesRealWorkspace` proves the additional worktree and real-checkout postcondition.
 3. **Strict outcome:** `TestNormalize` accepts one v1 object; table tests reject prose, a second value, unknown/missing fields, invalid enums/version, and malformed commands.
-4. **Separate fix:** a disposable run with `--excluded-tools=shell --allow-tool=write` changed `fixture.txt` from `broken` to `fixed`; the original commit remained HEAD.
+4. **Separate fix:** a disposable run with `--available-tools glob view apply_patch --allow-tool=write` changed `fixture.txt` from `broken` to `fixed`; the original commit remained HEAD.
 5. **Structured validation:** prompt and normalizer tests preserve `[["go","test","./..."]]` as argv, with no shell parsing.
 6. **Ambiguous/unable outcomes:** the real diagnosis returned `ambiguous` with high classification confidence and low fix confidence. An earlier deliberately over-filtered experiment returned `fix_completed:false` and an inability summary, demonstrating honest no-tool behavior; normalizer tests cover the enum contract.
-7. **No Git mutation:** in the fix experiment Copilot reported commit, push, and reset blocked because command execution was unavailable. HEAD was unchanged while only the expected file was modified. The subprocess-contract test asserts shell and all-permission flags are absent.
+7. **No Git mutation:** in the fix experiment Copilot reported commit, push, and reset blocked because command execution was unavailable. HEAD was unchanged while only the expected file was modified. The subprocess-contract test asserts the exact tool allowlist and that all-permission flags are absent.
 8. **Timeout/cancellation:** `TestTimeoutIsDeterministic` blocks the fake subprocess until context expiry and verifies a wrapped `context.DeadlineExceeded`. `exec.CommandContext` terminates the real child on cancellation; callers can distinguish parent cancellation from adapter timeout through the wrapped cause.
 
 All real experiments used newly created temporary repositories with no remotes, and removed them afterward.

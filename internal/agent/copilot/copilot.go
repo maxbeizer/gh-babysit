@@ -23,10 +23,11 @@ const (
 var versionPattern = regexp.MustCompile(`(?m)GitHub Copilot CLI (\d+)\.(\d+)\.(\d+)(?:[-+.]|\s|$)`)
 
 type Adapter struct {
-	Runner  process.Runner
-	Command string
-	Timeout time.Duration
-	TempDir string
+	Runner         process.Runner
+	Command        string
+	Timeout        time.Duration
+	CleanupTimeout time.Duration
+	TempDir        string
 }
 
 func (a Adapter) Probe(ctx context.Context) (string, error) {
@@ -48,24 +49,28 @@ func (a Adapter) Probe(ctx context.Context) (string, error) {
 }
 
 func (a Adapter) Run(ctx context.Context, request agent.Request) (outcome agent.Outcome, err error) {
+	runCtx := ctx
+	cancel := func() {}
+	if a.Timeout > 0 {
+		runCtx, cancel = context.WithTimeout(ctx, a.Timeout)
+	}
+	defer cancel()
 	if request.SchemaVersion != 0 && request.SchemaVersion != agent.SchemaVersion {
 		return outcome, fmt.Errorf("unsupported request schema version %d", request.SchemaVersion)
 	}
 	if request.Mode != agent.Diagnose && request.Mode != agent.Fix {
 		return outcome, fmt.Errorf("unsupported agent mode %q", request.Mode)
 	}
-	if _, err = a.Probe(ctx); err != nil {
+	if _, err = a.Probe(runCtx); err != nil {
 		return outcome, err
 	}
-	workspace, cleanup, err := a.isolatedWorkspace(ctx, request)
+	workspace, cleanup, err := a.isolatedWorkspace(runCtx, request)
 	if err != nil {
 		return outcome, err
 	}
 	if cleanup != nil {
 		defer func() {
-			if cleanupErr := cleanup(); err == nil && cleanupErr != nil {
-				err = cleanupErr
-			}
+			err = errors.Join(err, cleanup())
 		}()
 	}
 	request.SchemaVersion = agent.SchemaVersion
@@ -74,19 +79,11 @@ func (a Adapter) Run(ctx context.Context, request agent.Request) (outcome agent.
 	if err != nil {
 		return outcome, err
 	}
-	args := []string{"-C", workspace, "-p", prompt, "--silent", "--stream", "off", "--no-ask-user", "--no-auto-update", "--no-custom-instructions", "--disable-builtin-mcps", "--disallow-temp-dir", "--output-format", "text", "--excluded-tools=shell"}
+	args := []string{"-C", workspace, "-p", prompt, "--silent", "--stream", "off", "--no-ask-user", "--no-auto-update", "--no-custom-instructions", "--disable-builtin-mcps", "--disallow-temp-dir", "--output-format", "text", "--available-tools", "glob", "view"}
 	if request.Mode == agent.Fix {
-		// With the shell tool excluded, Git and arbitrary subprocesses cannot run.
-		args = append(args, "--allow-tool=write")
-	} else {
-		args = append(args, "--deny-tool=write")
+		// The explicit allowlist excludes command execution and every MCP tool.
+		args = append(args, "apply_patch", "--allow-tool=write")
 	}
-	runCtx := ctx
-	cancel := func() {}
-	if a.Timeout > 0 {
-		runCtx, cancel = context.WithTimeout(ctx, a.Timeout)
-	}
-	defer cancel()
 	result, runErr := a.runner().Run(runCtx, process.Request{Name: a.command(), Args: args, Dir: workspace, Env: safeEnvironment()})
 	if runErr != nil {
 		if errors.Is(runCtx.Err(), context.DeadlineExceeded) {
@@ -120,9 +117,11 @@ func (a Adapter) isolatedWorkspace(ctx context.Context, request agent.Request) (
 		return "", nil, err
 	}
 	cleanup := func() error {
-		removeErr := a.git(context.Background(), request.Workspace, "worktree", "remove", "--force", temp)
+		cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), a.cleanupTimeout())
+		defer cancel()
+		removeErr := a.git(cleanupCtx, request.Workspace, "worktree", "remove", "--force", temp)
 		_ = os.RemoveAll(temp)
-		after, identityErr := a.repositoryIdentity(context.Background(), request.Workspace)
+		after, identityErr := a.repositoryIdentity(cleanupCtx, request.Workspace)
 		if identityErr != nil {
 			return identityErr
 		}
@@ -165,6 +164,12 @@ func (a Adapter) runner() process.Runner {
 		return a.Runner
 	}
 	return process.ExecRunner{}
+}
+func (a Adapter) cleanupTimeout() time.Duration {
+	if a.CleanupTimeout > 0 {
+		return a.CleanupTimeout
+	}
+	return 30 * time.Second
 }
 func (a Adapter) command() string {
 	if a.Command != "" {

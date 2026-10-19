@@ -22,8 +22,8 @@ func Normalize(response []byte) (agent.Outcome, error) {
 		ClassificationConfidence *agent.Confidence     `json:"classification_confidence"`
 		FixConfidence            *agent.Confidence     `json:"fix_confidence"`
 		Diagnosis                *string               `json:"diagnosis"`
-		Plan                     *[]string             `json:"plan"`
-		RelevantFiles            *[]string             `json:"relevant_files"`
+		Plan                     *[]*string            `json:"plan"`
+		RelevantFiles            *[]*string            `json:"relevant_files"`
 		ValidationCommands       *[][]string           `json:"validation_commands"`
 		FixCompleted             *bool                 `json:"fix_completed"`
 		Summary                  *string               `json:"summary"`
@@ -55,6 +55,14 @@ func Normalize(response []byte) (agent.Outcome, error) {
 	if strings.TrimSpace(*raw.Diagnosis) == "" || strings.TrimSpace(*raw.Summary) == "" {
 		return agent.Outcome{}, errors.New("diagnosis and summary must not be empty")
 	}
+	plan, err := nonNullStrings("plan", *raw.Plan)
+	if err != nil {
+		return agent.Outcome{}, err
+	}
+	relevantFiles, err := nonNullStrings("relevant_files", *raw.RelevantFiles)
+	if err != nil {
+		return agent.Outcome{}, err
+	}
 	for _, command := range *raw.ValidationCommands {
 		if len(command) == 0 {
 			return agent.Outcome{}, errors.New("validation commands must be non-empty argument arrays")
@@ -68,9 +76,20 @@ func Normalize(response []byte) (agent.Outcome, error) {
 	return agent.Outcome{
 		SchemaVersion: *raw.SchemaVersion, Classification: *raw.Classification,
 		ClassificationConfidence: *raw.ClassificationConfidence, FixConfidence: *raw.FixConfidence,
-		Diagnosis: *raw.Diagnosis, Plan: *raw.Plan, RelevantFiles: *raw.RelevantFiles,
+		Diagnosis: *raw.Diagnosis, Plan: plan, RelevantFiles: relevantFiles,
 		ValidationCommands: *raw.ValidationCommands, FixCompleted: *raw.FixCompleted, Summary: *raw.Summary,
 	}, nil
+}
+
+func nonNullStrings(field string, values []*string) ([]string, error) {
+	result := make([]string, len(values))
+	for i, value := range values {
+		if value == nil {
+			return nil, fmt.Errorf("%s must not contain null", field)
+		}
+		result[i] = *value
+	}
+	return result, nil
 }
 
 func validClassification(v agent.Classification) bool {
