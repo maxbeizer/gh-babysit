@@ -33,7 +33,7 @@ type Adapter struct {
 func (a Adapter) Probe(ctx context.Context) (string, error) {
 	result, err := a.runner().Run(ctx, process.Request{Name: a.command(), Args: []string{"--version"}, Env: safeEnvironment()})
 	if err != nil {
-		return "", fmt.Errorf("run copilot --version: %w: %s", err, strings.TrimSpace(string(result.Stderr)))
+		return "", fmt.Errorf("run copilot --version: %w: %s", errors.Join(err, ctx.Err()), strings.TrimSpace(string(result.Stderr)))
 	}
 	match := versionPattern.FindStringSubmatch(string(result.Stdout))
 	if match == nil {
@@ -113,8 +113,8 @@ func (a Adapter) isolatedWorkspace(ctx context.Context, request agent.Request) (
 		return "", nil, fmt.Errorf("create diagnosis directory: %w", err)
 	}
 	if err := a.git(ctx, request.Workspace, "worktree", "add", "--detach", temp, request.RecordedSHA); err != nil {
-		_ = os.RemoveAll(temp)
-		return "", nil, err
+		cleanupErr := a.cleanupFailedWorktree(ctx, request.Workspace, temp)
+		return "", nil, errors.Join(err, cleanupErr)
 	}
 	cleanup := func() error {
 		cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), a.cleanupTimeout())
@@ -144,6 +144,28 @@ func (a Adapter) repositoryIdentity(ctx context.Context, dir string) (repository
 	return repositoryState{strings.TrimSpace(head), status}, err
 }
 
+func (a Adapter) cleanupFailedWorktree(parent context.Context, workspace, temp string) error {
+	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(parent), a.cleanupTimeout())
+	defer cancel()
+	list, err := a.gitOutput(cleanupCtx, workspace, "worktree", "list", "--porcelain")
+	if err != nil {
+		_ = os.RemoveAll(temp)
+		return err
+	}
+	registered := false
+	for _, line := range strings.Split(list, "\n") {
+		if path, found := strings.CutPrefix(line, "worktree "); found && filepath.Clean(path) == filepath.Clean(temp) {
+			registered = true
+			break
+		}
+	}
+	if registered {
+		err = a.git(cleanupCtx, workspace, "worktree", "remove", "--force", temp)
+	}
+	_ = os.RemoveAll(temp)
+	return err
+}
+
 func (a Adapter) git(ctx context.Context, dir string, args ...string) error {
 	_, err := a.gitResult(ctx, dir, args...)
 	return err
@@ -155,7 +177,7 @@ func (a Adapter) gitOutput(ctx context.Context, dir string, args ...string) (str
 func (a Adapter) gitResult(ctx context.Context, dir string, args ...string) (process.Result, error) {
 	result, err := a.runner().Run(ctx, process.Request{Name: "git", Args: args, Dir: dir, Env: safeEnvironment()})
 	if err != nil {
-		return result, fmt.Errorf("git %s failed: %w: %s", strings.Join(args, " "), err, strings.TrimSpace(string(result.Stderr)))
+		return result, fmt.Errorf("git %s failed: %w: %s", strings.Join(args, " "), errors.Join(err, ctx.Err()), strings.TrimSpace(string(result.Stderr)))
 	}
 	return result, nil
 }

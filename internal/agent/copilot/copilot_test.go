@@ -177,7 +177,7 @@ func TestTimeoutCoversWorktreeSetup(t *testing.T) {
 		if request.Args[0] == "rev-parse" {
 			return process.Result{Stdout: []byte("abc\n")}, nil
 		}
-		if request.Args[0] == "status" {
+		if request.Args[0] == "status" || request.Args[0] == "worktree" && request.Args[1] == "list" {
 			return process.Result{}, nil
 		}
 		<-ctx.Done()
@@ -187,6 +187,58 @@ func TestTimeoutCoversWorktreeSetup(t *testing.T) {
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("got %v", err)
 	}
+}
+
+func TestCanceledRunnerExitStillPreservesDeadline(t *testing.T) {
+	runner := &fakeRunner{run: func(ctx context.Context, _ process.Request) (process.Result, error) {
+		<-ctx.Done()
+		return process.Result{}, errors.New("process killed")
+	}}
+	_, err := (Adapter{Runner: runner, Timeout: time.Millisecond}).Run(context.Background(), agent.Request{Mode: agent.Fix, Workspace: "/repo"})
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("deadline cause lost: %v", err)
+	}
+}
+
+func TestPartialWorktreeRegistrationIsRemoved(t *testing.T) {
+	removed := false
+	var runner *fakeRunner
+	runner = &fakeRunner{run: func(ctx context.Context, request process.Request) (process.Result, error) {
+		if request.Name == "copilot" {
+			return process.Result{Stdout: []byte("GitHub Copilot CLI 1.0.96\n")}, nil
+		}
+		if request.Args[0] == "rev-parse" {
+			return process.Result{Stdout: []byte("abc\n")}, nil
+		}
+		if request.Args[0] == "status" {
+			return process.Result{}, nil
+		}
+		if request.Args[0] == "worktree" && request.Args[1] == "add" {
+			<-ctx.Done()
+			return process.Result{}, errors.New("process killed")
+		}
+		if request.Args[0] == "worktree" && request.Args[1] == "list" {
+			return process.Result{Stdout: []byte("worktree " + request.Dir + "/elsewhere\n\nworktree " + findTempPath(runner.calls) + "\n")}, nil
+		}
+		if request.Args[0] == "worktree" && request.Args[1] == "remove" {
+			removed = true
+			return process.Result{}, nil
+		}
+		return process.Result{}, nil
+	}}
+	_, err := (Adapter{Runner: runner, Timeout: time.Millisecond, TempDir: t.TempDir()}).Run(context.Background(), agent.Request{Mode: agent.Diagnose, Workspace: "/repo", RecordedSHA: "abc"})
+	if !errors.Is(err, context.DeadlineExceeded) || !removed {
+		t.Fatalf("err=%v removed=%v", err, removed)
+	}
+}
+
+func findTempPath(calls []call) string {
+	for _, call := range calls {
+		if call.name == "git" && len(call.args) >= 5 && call.args[0] == "worktree" && call.args[1] == "add" {
+			return call.args[3]
+		}
+	}
+	return ""
 }
 
 func TestTimeoutIsDeterministic(t *testing.T) {
