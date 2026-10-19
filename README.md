@@ -2,7 +2,7 @@
 
 `gh babysit` is a GitHub CLI extension that will watch required checks for an existing pull request and safely delegate diagnosis and optional fixes to a coding agent.
 
-The current milestone is deliberately non-mutating: it verifies the checkout, GitHub authentication, pull request, push destination, and write permission, but does **not** watch CI, invoke an agent, edit files, commit, or push.
+The current milestone is deliberately non-mutating: it verifies the checkout and pull request, then watches the required checks for the recorded head SHA. It does **not** invoke an agent, edit files, rerun checks, commit, or push.
 
 ## Usage
 
@@ -10,7 +10,11 @@ The current milestone is deliberately non-mutating: it verifies the checkout, Gi
 gh babysit [<pr-number-or-url>] [--auto]
 ```
 
-The optional pull request may be a number or URL; when omitted, it is resolved from the current branch. `--auto` reserves the future automatic mode. Run `gh babysit --help` for timeout and agent-adapter flags. A normal invocation runs the read-only repository preflight, reports the resolved PR and baseline SHA, then explains that watching is unavailable.
+The optional pull request may be a number or URL; when omitted, it is resolved from the current branch. `--auto` reserves the future automatic mode and does not permit mutations in this milestone. Run `gh babysit --help` for polling and timeout flags.
+
+A normal invocation runs repository preflight and polls GitHub's active required-check configuration and exact-SHA check observations. It waits for configured checks to appear and requires two consecutive successful snapshots, so a newly pushed commit cannot pass while its suite is still absent. Optional checks are reported but do not gate success.
+
+When a required check fails, `gh babysit` prints its URL, bounded failed-job logs when an Actions run can be identified, and a safe `gh run rerun … --failed` suggestion without executing it. An unexpected PR-head change, ambiguous required-check configuration, unavailable GitHub data, or cancellation stops safely. `--appearance-timeout` bounds suite appearance; `--timeout` bounds the entire watch.
 
 ## Installation and development
 
@@ -27,7 +31,7 @@ The approved v1 architecture, safety boundaries, exit codes, and roadmap are in 
 
 | Code | Meaning |
 |---:|---|
-| 0 | Success |
+| 0 | All required checks passed for the recorded head SHA |
 | 2 | Usage, configuration, executable, or authentication error |
 | 3 | User declined or canceled an interactive action |
 | 4 | Failure is not confidently code-fixable |

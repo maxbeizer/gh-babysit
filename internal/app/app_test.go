@@ -32,6 +32,18 @@ func successfulPreflightRunner(_ context.Context, r process.Request) (process.Re
 	if command == "git config --get branch.topic.pushRemote" || command == "git config --get remote.pushDefault" {
 		return process.Result{}, fmt.Errorf("unset")
 	}
+	if command == "gh pr view 123 --repo acme/widgets --json headRefOid" {
+		return process.Result{Stdout: []byte(`{"headRefOid":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}`)}, nil
+	}
+	if strings.Contains(command, "required_status_checks") {
+		return process.Result{Stdout: []byte(`[{"contexts":[],"checks":[]}]`)}, nil
+	}
+	if strings.Contains(command, "rules/branches") || strings.Contains(command, "/statuses?") {
+		return process.Result{Stdout: []byte(`[[]]`)}, nil
+	}
+	if strings.Contains(command, "/check-runs?") {
+		return process.Result{Stdout: []byte(`[{"check_runs":[]}]`)}, nil
+	}
 	out, ok := outputs[command]
 	if !ok {
 		return process.Result{}, fmt.Errorf("unexpected command %s", command)
@@ -68,11 +80,11 @@ func TestCommandAcceptsDocumentedSurface(t *testing.T) {
 	var out bytes.Buffer
 	cmd := NewCommandWithRunner("dev", runnerFunc(successfulPreflightRunner))
 	cmd.SetOut(&out)
-	cmd.SetArgs([]string{"123", "--auto", "--agent-command", "agent", "--poll-interval", "1s", "--appearance-timeout", "2s", "--timeout", "3s"})
+	cmd.SetArgs([]string{"123", "--auto", "--agent-command", "agent", "--poll-interval", "1ms", "--appearance-timeout", "2s", "--timeout", "3s"})
 	if err := cmd.Execute(); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(out.String(), "Preflight passed") || !strings.Contains(out.String(), "not implemented yet") {
+	if !strings.Contains(out.String(), "Watching required checks") || !strings.Contains(out.String(), "success (stable 2/2)") {
 		t.Fatalf("output = %q", out.String())
 	}
 }

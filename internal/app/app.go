@@ -1,14 +1,20 @@
 package app
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"net/url"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/maxbeizer/gh-babysit/internal/clock"
+	"github.com/maxbeizer/gh-babysit/internal/exitcode"
+	gh "github.com/maxbeizer/gh-babysit/internal/github"
 	"github.com/maxbeizer/gh-babysit/internal/preflight"
 	"github.com/maxbeizer/gh-babysit/internal/process"
+	"github.com/maxbeizer/gh-babysit/internal/watcher"
 	"github.com/spf13/cobra"
 )
 
@@ -61,7 +67,28 @@ func NewCommandWithRunner(version string, runner process.Runner) *cobra.Command 
 			if err != nil {
 				return err
 			}
-			fmt.Fprintf(cmd.OutOrStdout(), "Preflight passed for PR #%d (%s) at %.12s. CI watching is not implemented yet.\n", result.PullRequest.Number, result.PullRequest.URL, result.Baseline.HeadSHA)
+			fmt.Fprintf(cmd.OutOrStdout(), "Watching required checks for PR #%d (%s) at %.12s.\n", result.PullRequest.Number, result.PullRequest.URL, result.Baseline.HeadSHA)
+			source, err := gh.NewWatchSource(runner, result.Root, result.PullRequest)
+			if err != nil {
+				return exitcode.New(exitcode.Usage, err)
+			}
+			watchResult, err := watcher.Run(cmd.Context(), source, clock.Real{}, watcher.Options{RecordedSHA: result.Baseline.HeadSHA, PollInterval: o.PollInterval, AppearanceTimeout: o.AppearanceTimeout, Timeout: o.Timeout, Output: cmd.OutOrStdout()})
+			if err != nil {
+				if cause := context.Cause(cmd.Context()); cause != nil {
+					return cause
+				}
+				if errors.Is(err, watcher.ErrTimeout) {
+					return exitcode.New(exitcode.Timeout, err)
+				}
+				return exitcode.New(exitcode.SafetyStop, err)
+			}
+			if watchResult.State == watcher.Failed {
+				fmt.Fprintf(cmd.OutOrStdout(), "Required check %s failed (%s).\nLogs:\n%s\n", watchResult.Failed.Context, watchResult.Failed.URL, watchResult.Logs)
+				if watchResult.RerunSuggestion != "" {
+					fmt.Fprintf(cmd.OutOrStdout(), "Safe suggestion (not executed): %s\n", watchResult.RerunSuggestion)
+				}
+				return exitcode.New(exitcode.NotFixable, fmt.Errorf("required check %s failed", watchResult.Failed.Context))
+			}
 			return nil
 		},
 	}
