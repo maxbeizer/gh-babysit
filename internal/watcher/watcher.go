@@ -15,6 +15,7 @@ import (
 )
 
 type Source interface {
+	VerifyLocal(context.Context) error
 	HeadSHA(context.Context) (string, error)
 	Snapshot(context.Context) (gh.Snapshot, error)
 	FailedLogs(context.Context, gh.Observation, int) (string, error)
@@ -30,17 +31,18 @@ const (
 var ErrTimeout = errors.New("watch timeout")
 
 type Options struct {
-	RecordedSHA                              string
+	RecordedSHA, Repository                  string
 	PollInterval, AppearanceTimeout, Timeout time.Duration
 	LogLimit                                 int
 	Output                                   io.Writer
 }
 
 type Result struct {
-	State    State
-	Snapshot gh.Snapshot
-	Failed   gh.Observation
-	Logs     string
+	State           State
+	Snapshot        gh.Snapshot
+	Failed          gh.Observation
+	Logs            string
+	RerunSuggestion string
 }
 
 func Run(ctx context.Context, source Source, timer clock.Clock, options Options) (Result, error) {
@@ -58,6 +60,9 @@ func Run(ctx context.Context, source Source, timer clock.Clock, options Options)
 	for {
 		if !timer.Now().Before(deadline) {
 			return Result{}, timeoutError(options.Timeout)
+		}
+		if err := source.VerifyLocal(watchCtx); err != nil {
+			return Result{}, operationError("verify local baseline", err, options.Timeout)
 		}
 		before, err := call(watchCtx, timer, deadline, source.HeadSHA)
 		if err != nil {
@@ -77,6 +82,9 @@ func Run(ctx context.Context, source Source, timer clock.Clock, options Options)
 		if after != before || snapshot.SHA != options.RecordedSHA {
 			return Result{}, fmt.Errorf("safety stop: PR head changed while reading checks")
 		}
+		if err := source.VerifyLocal(watchCtx); err != nil {
+			return Result{}, operationError("verify local baseline", err, options.Timeout)
+		}
 		if !snapshot.RequirementsAuthoritative {
 			return Result{}, errors.New("safety stop: required-check configuration is not authoritative")
 		}
@@ -95,6 +103,12 @@ func Run(ctx context.Context, source Source, timer clock.Clock, options Options)
 				result.Logs = "unavailable: " + logErr.Error()
 			} else {
 				result.Logs = bound(logs, options.LogLimit)
+			}
+			if err := source.VerifyLocal(watchCtx); err != nil {
+				return Result{}, operationError("verify local baseline", err, options.Timeout)
+			}
+			if observation.Source == gh.SourceCheckRun && observation.WorkflowRunID != nil && observation.Conclusion == "cancelled" && options.Repository != "" {
+				result.RerunSuggestion = fmt.Sprintf("gh run rerun %d --failed --repo %s", *observation.WorkflowRunID, options.Repository)
 			}
 			print(options.Output, "failed %s: %s\n", observation.Context, observation.URL)
 			return result, nil

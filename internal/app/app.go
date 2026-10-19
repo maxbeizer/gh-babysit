@@ -68,11 +68,11 @@ func NewCommandWithRunner(version string, runner process.Runner) *cobra.Command 
 				return err
 			}
 			fmt.Fprintf(cmd.OutOrStdout(), "Watching required checks for PR #%d (%s) at %.12s.\n", result.PullRequest.Number, result.PullRequest.URL, result.Baseline.HeadSHA)
-			source, err := gh.NewWatchSource(runner, result.Root, result.PullRequest)
+			source, err := gh.NewWatchSource(runner, result.Root, result.PullRequest, result.Baseline.HeadSHA, result.Baseline.Status, result.Baseline.Index)
 			if err != nil {
 				return exitcode.New(exitcode.Usage, err)
 			}
-			watchResult, err := watcher.Run(cmd.Context(), source, clock.Real{}, watcher.Options{RecordedSHA: result.Baseline.HeadSHA, PollInterval: o.PollInterval, AppearanceTimeout: o.AppearanceTimeout, Timeout: o.Timeout, Output: cmd.OutOrStdout()})
+			watchResult, err := watcher.Run(cmd.Context(), source, clock.Real{}, watcher.Options{RecordedSHA: result.Baseline.HeadSHA, Repository: result.PullRequest.Repository, PollInterval: o.PollInterval, AppearanceTimeout: o.AppearanceTimeout, Timeout: o.Timeout, Output: cmd.OutOrStdout()})
 			if err != nil {
 				if cause := context.Cause(cmd.Context()); cause != nil {
 					return cause
@@ -84,6 +84,9 @@ func NewCommandWithRunner(version string, runner process.Runner) *cobra.Command 
 			}
 			if watchResult.State == watcher.Failed {
 				fmt.Fprintf(cmd.OutOrStdout(), "Required check %s failed (%s).\nLogs:\n%s\n", watchResult.Failed.Context, watchResult.Failed.URL, watchResult.Logs)
+				if watchResult.RerunSuggestion != "" {
+					fmt.Fprintf(cmd.OutOrStdout(), "Safe suggestion (not executed): %s\n", watchResult.RerunSuggestion)
+				}
 				return exitcode.New(exitcode.NotFixable, fmt.Errorf("required check %s failed", watchResult.Failed.Context))
 			}
 			return nil

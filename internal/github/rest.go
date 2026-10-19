@@ -53,14 +53,14 @@ func (c GHAPI) Get(ctx context.Context, endpoint string) ([]json.RawMessage, err
 	if c.Runner == nil {
 		return nil, errors.New("gh API runner is nil")
 	}
-	args := []string{"api", "--method", "GET", "--paginate", "--slurp", "-H", "Accept: application/vnd.github+json"}
+	args := []string{"api", "--method", "GET", "--paginate", "--include", "-H", "Accept: application/vnd.github+json"}
 	if c.Host != "" {
 		args = append(args, "--hostname", c.Host)
 	}
 	args = append(args, endpoint)
 	result, err := c.Runner.Run(ctx, process.Request{Name: "gh", Args: args})
 	if err != nil {
-		message := strings.TrimSpace(string(result.Stderr))
+		message := strings.TrimSpace(string(append(append([]byte(nil), result.Stdout...), result.Stderr...)))
 		if status := statusFromGHError(message); status != 0 {
 			httpErr := &HTTPStatusError{Status: status, Body: message}
 			if retry, reset, ok := rateLimitMetadata(message); ok && (status == 403 || status == 429) {
@@ -70,8 +70,8 @@ func (c GHAPI) Get(ctx context.Context, endpoint string) ([]json.RawMessage, err
 		}
 		return nil, fmt.Errorf("gh api %s: %w: %s", endpoint, err, message)
 	}
-	var pages []json.RawMessage
-	if err := json.Unmarshal(result.Stdout, &pages); err != nil {
+	pages, err := parseIncludedResponses(result.Stdout)
+	if err != nil {
 		return nil, fmt.Errorf("decode gh api response for %s: %w", endpoint, err)
 	}
 	return pages, nil
@@ -211,6 +211,7 @@ func (b RESTBackend) checkRuns(ctx context.Context, req Request) ([]Observation,
 				ID:            run.ID,
 				State:         normalizeCheckRun(run.Status, run.Conclusion),
 				RawState:      firstNonempty(run.Conclusion, run.Status),
+				Conclusion:    run.Conclusion,
 				URL:           run.DetailsURL,
 				WorkflowRunID: workflowRunID,
 				Attempt:       attempt,
@@ -298,7 +299,7 @@ func normalizeStatus(state string) State {
 
 var (
 	actionsRunPattern = regexp.MustCompile(`/actions/runs/([0-9]+)(?:/|$)`)
-	ghStatusPattern   = regexp.MustCompile(`(?i)HTTP ([0-9]{3})`)
+	ghStatusPattern   = regexp.MustCompile(`(?i)HTTP(?:/[0-9.]+)?[ :]([0-9]{3})`)
 	retryAfterPattern = regexp.MustCompile(`(?im)retry-after:\s*([0-9]+)`)
 	rateResetPattern  = regexp.MustCompile(`(?im)x-ratelimit-reset:\s*([0-9]+)`)
 )
@@ -338,6 +339,35 @@ func workflowRunFromURL(value string) *int64 {
 		return nil
 	}
 	return &id
+}
+
+func parseIncludedResponses(output []byte) ([]json.RawMessage, error) {
+	text := strings.ReplaceAll(string(output), "\r\n", "\n")
+	var pages []json.RawMessage
+	for len(strings.TrimSpace(text)) > 0 {
+		text = strings.TrimLeft(text, "\n")
+		if !strings.HasPrefix(text, "HTTP/") {
+			return nil, errors.New("gh api --include response omitted HTTP status line")
+		}
+		headerEnd := strings.Index(text, "\n\n")
+		if headerEnd < 0 {
+			return nil, errors.New("gh api --include response omitted header terminator")
+		}
+		text = text[headerEnd+2:]
+		next := strings.Index(text, "\nHTTP/")
+		body := text
+		if next >= 0 {
+			body, text = text[:next], text[next+1:]
+		} else {
+			text = ""
+		}
+		body = strings.TrimSpace(body)
+		if !json.Valid([]byte(body)) {
+			return nil, errors.New("gh api --include response contained invalid JSON")
+		}
+		pages = append(pages, json.RawMessage(body))
+	}
+	return pages, nil
 }
 
 func decodeSingle(pages []json.RawMessage, target any) error {

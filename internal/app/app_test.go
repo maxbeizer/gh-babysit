@@ -36,13 +36,13 @@ func successfulPreflightRunner(_ context.Context, r process.Request) (process.Re
 		return process.Result{Stdout: []byte(`{"headRefOid":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}`)}, nil
 	}
 	if strings.Contains(command, "required_status_checks") {
-		return process.Result{Stdout: []byte(`[{"contexts":[],"checks":[]}]`)}, nil
+		return process.Result{Stdout: []byte("HTTP/2.0 200 OK\n\n{\"contexts\":[],\"checks\":[]}")}, nil
 	}
 	if strings.Contains(command, "rules/branches") || strings.Contains(command, "/statuses?") {
-		return process.Result{Stdout: []byte(`[[]]`)}, nil
+		return process.Result{Stdout: []byte("HTTP/2.0 200 OK\n\n[]")}, nil
 	}
 	if strings.Contains(command, "/check-runs?") {
-		return process.Result{Stdout: []byte(`[{"check_runs":[]}]`)}, nil
+		return process.Result{Stdout: []byte("HTTP/2.0 200 OK\n\n{\"check_runs\":[]}")}, nil
 	}
 	out, ok := outputs[command]
 	if !ok {

@@ -51,13 +51,13 @@ func TestGHAPIUsesReadOnlyPaginatedStructuredCall(t *testing.T) {
 	var got process.Request
 	client := GHAPI{Host: "github.example.com", Runner: runnerFunc(func(_ context.Context, request process.Request) (process.Result, error) {
 		got = request
-		return process.Result{Stdout: []byte(`[{"ok":true}]`)}, nil
+		return process.Result{Stdout: []byte("HTTP/2.0 200 OK\r\nX-RateLimit-Remaining: 10\r\n\r\n{\"ok\":true}\n")}, nil
 	})}
 	pages, err := client.Get(context.Background(), "repos/o/r/rules/branches/main")
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"api", "--method", "GET", "--paginate", "--slurp", "-H", "Accept: application/vnd.github+json", "--hostname", "github.example.com", "repos/o/r/rules/branches/main"}
+	want := []string{"api", "--method", "GET", "--paginate", "--include", "-H", "Accept: application/vnd.github+json", "--hostname", "github.example.com", "repos/o/r/rules/branches/main"}
 	if got.Name != "gh" || !reflect.DeepEqual(got.Args, want) || len(pages) != 1 {
 		t.Fatalf("request = %#v, pages = %d; want gh %#v", got, len(pages), want)
 	}
@@ -65,7 +65,7 @@ func TestGHAPIUsesReadOnlyPaginatedStructuredCall(t *testing.T) {
 
 func TestGHAPIPreservesRateLimitMetadata(t *testing.T) {
 	client := GHAPI{Runner: runnerFunc(func(context.Context, process.Request) (process.Result, error) {
-		return process.Result{Stderr: []byte("gh: rate limit exceeded (HTTP 429)\nRetry-After: 7\n")}, errors.New("exit status 1")
+		return process.Result{Stdout: []byte("HTTP/2.0 429 Too Many Requests\r\nRetry-After: 7\r\n\r\n{}\n"), Stderr: []byte("gh: rate limit exceeded\n")}, errors.New("exit status 1")
 	})}
 	_, err := client.Get(context.Background(), "endpoint")
 	var limited *RateLimitError

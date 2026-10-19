@@ -17,10 +17,19 @@ type fakeSource struct {
 	logs        string
 	snapshotErr error
 	logErr      error
+	localErrors []error
 	block       <-chan struct{}
 	calls       int
 }
 
+func (f *fakeSource) VerifyLocal(context.Context) error {
+	if len(f.localErrors) == 0 {
+		return nil
+	}
+	err := f.localErrors[0]
+	f.localErrors = f.localErrors[1:]
+	return err
+}
 func (f *fakeSource) HeadSHA(ctx context.Context) (string, error) {
 	if f.block != nil {
 		select {
@@ -134,6 +143,27 @@ func TestRunReturnsActionableFailureWithBoundedLogs(t *testing.T) {
 	}
 	if result.State != Failed || result.Logs != "012\n[logs truncated]\n789" {
 		t.Fatalf("result=%+v", result)
+	}
+}
+
+func TestRunSuggestsOnlyConservativelySafeReruns(t *testing.T) {
+	for _, test := range []struct {
+		name, conclusion, want string
+	}{
+		{name: "cancelled", conclusion: "cancelled", want: "gh run rerun 77 --failed --repo acme/widgets"},
+		{name: "deterministic failure", conclusion: "failure"},
+		{name: "timed out may be deterministic", conclusion: "timed_out"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			runID := int64(77)
+			failed := obs("build", gh.StateFailure)
+			failed.Source, failed.WorkflowRunID, failed.Conclusion = gh.SourceCheckRun, &runID, test.conclusion
+			source := &fakeSource{snapshots: []gh.Snapshot{snapshot([]gh.Requirement{req("build")}, failed)}, logs: "logs"}
+			result, err := Run(context.Background(), source, &fakeClock{}, Options{RecordedSHA: "sha", Repository: "acme/widgets", PollInterval: time.Second, AppearanceTimeout: time.Minute, Timeout: time.Hour})
+			if err != nil || result.RerunSuggestion != test.want {
+				t.Fatalf("result=%+v error=%v", result, err)
+			}
+		})
 	}
 }
 
@@ -254,6 +284,14 @@ func (s blockingSource) FailedLogs(ctx context.Context, o gh.Observation, n int)
 		return "", nil
 	case <-ctx.Done():
 		return "", ctx.Err()
+	}
+}
+
+func TestRunStopsWhenLocalBaselineChangesAtPollingBoundary(t *testing.T) {
+	source := &fakeSource{localErrors: []error{nil, errors.New("local index changed")}, snapshots: []gh.Snapshot{snapshot(nil)}}
+	_, err := Run(context.Background(), source, &fakeClock{}, Options{RecordedSHA: "sha", PollInterval: time.Second, AppearanceTimeout: time.Minute, Timeout: time.Hour})
+	if err == nil || !strings.Contains(err.Error(), "local index changed") {
+		t.Fatalf("error=%v", err)
 	}
 }
 

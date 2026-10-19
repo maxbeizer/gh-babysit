@@ -1,6 +1,7 @@
 package github
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -14,19 +15,44 @@ import (
 
 // WatchSource wires the exact-SHA provider to read-only gh commands used while polling.
 type WatchSource struct {
-	Runner   process.Runner
-	Root     string
-	PR       domain.PullRequest
-	Provider *Provider
+	Runner         process.Runner
+	Root           string
+	PR             domain.PullRequest
+	Provider       *Provider
+	BaselineHead   string
+	BaselineStatus []byte
+	BaselineIndex  []byte
 }
 
-func NewWatchSource(runner process.Runner, root string, pr domain.PullRequest) (*WatchSource, error) {
+func NewWatchSource(runner process.Runner, root string, pr domain.PullRequest, baselineHead string, baselineStatus, baselineIndex []byte) (*WatchSource, error) {
 	parts := strings.Split(pr.Repository, "/")
 	if len(parts) != 2 {
 		return nil, fmt.Errorf("invalid repository %q", pr.Repository)
 	}
 	api := GHAPI{Runner: runner, Host: pr.Host}
-	return &WatchSource{Runner: runner, Root: root, PR: pr, Provider: NewProvider(RESTBackend{API: api})}, nil
+	return &WatchSource{Runner: runner, Root: root, PR: pr, Provider: NewProvider(RESTBackend{API: api}), BaselineHead: baselineHead, BaselineStatus: append([]byte(nil), baselineStatus...), BaselineIndex: append([]byte(nil), baselineIndex...)}, nil
+}
+
+func (s *WatchSource) VerifyLocal(ctx context.Context) error {
+	checks := []struct {
+		args []string
+		want []byte
+		name string
+	}{
+		{args: []string{"rev-parse", "HEAD"}, want: []byte(s.BaselineHead + "\n"), name: "HEAD"},
+		{args: []string{"status", "--porcelain=v1", "-z", "--untracked-files=all"}, want: s.BaselineStatus, name: "worktree"},
+		{args: []string{"ls-files", "-s", "-z"}, want: s.BaselineIndex, name: "index"},
+	}
+	for _, check := range checks {
+		result, err := s.Runner.Run(ctx, process.Request{Name: "git", Dir: s.Root, Args: check.args})
+		if err != nil {
+			return fmt.Errorf("verify local %s: %w", check.name, err)
+		}
+		if !bytes.Equal(result.Stdout, check.want) {
+			return fmt.Errorf("safety stop: local %s changed during watch", check.name)
+		}
+	}
+	return nil
 }
 
 func (s *WatchSource) HeadSHA(ctx context.Context) (string, error) {
@@ -59,7 +85,12 @@ func (s *WatchSource) FailedLogs(ctx context.Context, observation Observation, l
 	if len(result.Stdout) == 0 {
 		return "", errors.New("failed-check logs are empty or unavailable")
 	}
-	return string(result.Stdout), nil
+	logs := string(result.Stdout)
+	if result.StdoutTruncated {
+		half := len(logs) / 2
+		logs = logs[:half] + "\n[logs truncated]\n" + logs[half:]
+	}
+	return logs, nil
 }
 
 func watchCommandError(operation string, result process.Result, err error) error {

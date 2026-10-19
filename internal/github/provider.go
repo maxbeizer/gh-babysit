@@ -50,6 +50,7 @@ type Observation struct {
 	ID            int64      `json:"id"`
 	State         State      `json:"state"`
 	RawState      string     `json:"raw_state"`
+	Conclusion    string     `json:"conclusion,omitempty"`
 	URL           string     `json:"url,omitempty"`
 	WorkflowRunID *int64     `json:"workflow_run_id,omitempty"`
 	Attempt       int        `json:"attempt,omitempty"`
