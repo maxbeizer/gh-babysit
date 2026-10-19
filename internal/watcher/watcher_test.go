@@ -17,10 +17,18 @@ type fakeSource struct {
 	logs        string
 	snapshotErr error
 	logErr      error
+	block       <-chan struct{}
 	calls       int
 }
 
-func (f *fakeSource) HeadSHA(context.Context) (string, error) {
+func (f *fakeSource) HeadSHA(ctx context.Context) (string, error) {
+	if f.block != nil {
+		select {
+		case <-f.block:
+		case <-ctx.Done():
+			return "", ctx.Err()
+		}
+	}
 	if len(f.heads) == 0 {
 		return "sha", nil
 	}
@@ -115,7 +123,7 @@ func TestRunReportsOptionalFailureWithoutGatingSuccess(t *testing.T) {
 	}
 }
 
-func TestRunReturnsActionableFailureWithBoundedLogsAndSuggestion(t *testing.T) {
+func TestRunReturnsActionableFailureWithBoundedLogs(t *testing.T) {
 	runID := int64(77)
 	failed := obs("build", gh.StateFailure)
 	failed.WorkflowRunID = &runID
@@ -124,7 +132,7 @@ func TestRunReturnsActionableFailureWithBoundedLogsAndSuggestion(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.State != Failed || result.Logs != "012\n[logs truncated]\n789" || result.RerunSuggestion != "gh run rerun 77 --failed" {
+	if result.State != Failed || result.Logs != "012\n[logs truncated]\n789" {
 		t.Fatalf("result=%+v", result)
 	}
 }
@@ -136,7 +144,7 @@ func TestRunReportsUnavailableLogsWithoutGuessingARerun(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Logs != "unavailable: logs unavailable" || result.RerunSuggestion != "" {
+	if result.Logs != "unavailable: logs unavailable" {
 		t.Fatalf("result=%+v", result)
 	}
 }
@@ -152,6 +160,100 @@ func TestRunPropagatesProviderAndCancellationFailures(t *testing.T) {
 	_, err = Run(ctx, source, &fakeClock{}, Options{RecordedSHA: "sha", PollInterval: time.Second, AppearanceTimeout: time.Minute, Timeout: time.Hour})
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("cancellation error=%v", err)
+	}
+}
+
+type rateLimitError struct{ wait time.Duration }
+
+func (e rateLimitError) Error() string                      { return "rate limited" }
+func (e rateLimitError) RetryAfter(time.Time) time.Duration { return e.wait }
+
+type sequencedSource struct {
+	fakeSource
+	errors []error
+}
+
+func (s *sequencedSource) Snapshot(ctx context.Context) (gh.Snapshot, error) {
+	if len(s.errors) > 0 {
+		err := s.errors[0]
+		s.errors = s.errors[1:]
+		if err != nil {
+			return gh.Snapshot{}, err
+		}
+	}
+	return s.fakeSource.Snapshot(ctx)
+}
+
+func TestRunRetriesRateLimitsWithinOverallDeadline(t *testing.T) {
+	success := snapshot(nil)
+	source := &sequencedSource{fakeSource: fakeSource{snapshots: []gh.Snapshot{success, success}}, errors: []error{rateLimitError{wait: 2 * time.Second}}}
+	clock := &fakeClock{}
+	result, err := Run(context.Background(), source, clock, Options{RecordedSHA: "sha", PollInterval: time.Second, AppearanceTimeout: time.Minute, Timeout: time.Minute})
+	if err != nil || result.State != Success || clock.now.Sub(time.Time{}) != 3*time.Second {
+		t.Fatalf("result=%+v error=%v now=%s", result, err, clock.now)
+	}
+
+	source = &sequencedSource{errors: []error{rateLimitError{wait: 2 * time.Minute}}}
+	_, err = Run(context.Background(), source, &fakeClock{}, Options{RecordedSHA: "sha", PollInterval: time.Second, AppearanceTimeout: time.Minute, Timeout: time.Minute})
+	if !errors.Is(err, ErrTimeout) {
+		t.Fatalf("error=%v", err)
+	}
+}
+
+func TestOverallTimeoutCancelsBlockedOperations(t *testing.T) {
+	for _, stage := range []string{"head", "snapshot", "logs"} {
+		t.Run(stage, func(t *testing.T) {
+			blocked := make(chan struct{})
+			source := &fakeSource{block: blocked}
+			if stage != "head" {
+				source.block = nil
+			}
+			if stage == "snapshot" {
+				source.snapshotErr = nil
+				source.snapshots = nil
+			}
+			if stage == "logs" {
+				failed := obs("build", gh.StateFailure)
+				source.snapshots = []gh.Snapshot{snapshot([]gh.Requirement{req("build")}, failed)}
+			}
+			ctxSource := Source(source)
+			if stage != "head" {
+				ctxSource = blockingSource{Source: source, stage: stage, blocked: blocked}
+			}
+			_, err := Run(context.Background(), ctxSource, &fakeClock{}, Options{RecordedSHA: "sha", PollInterval: time.Second, AppearanceTimeout: time.Minute, Timeout: 20 * time.Millisecond})
+			if !errors.Is(err, ErrTimeout) {
+				t.Fatalf("error=%v", err)
+			}
+		})
+	}
+}
+
+type blockingSource struct {
+	Source
+	stage   string
+	blocked <-chan struct{}
+}
+
+func (s blockingSource) Snapshot(ctx context.Context) (gh.Snapshot, error) {
+	if s.stage != "snapshot" {
+		return s.Source.Snapshot(ctx)
+	}
+	select {
+	case <-s.blocked:
+		return gh.Snapshot{}, nil
+	case <-ctx.Done():
+		return gh.Snapshot{}, ctx.Err()
+	}
+}
+func (s blockingSource) FailedLogs(ctx context.Context, o gh.Observation, n int) (string, error) {
+	if s.stage != "logs" {
+		return s.Source.FailedLogs(ctx, o, n)
+	}
+	select {
+	case <-s.blocked:
+		return "", nil
+	case <-ctx.Done():
+		return "", ctx.Err()
 	}
 }
 

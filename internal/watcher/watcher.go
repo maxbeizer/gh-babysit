@@ -37,10 +37,10 @@ type Options struct {
 }
 
 type Result struct {
-	State                 State
-	Snapshot              gh.Snapshot
-	Failed                gh.Observation
-	Logs, RerunSuggestion string
+	State    State
+	Snapshot gh.Snapshot
+	Failed   gh.Observation
+	Logs     string
 }
 
 func Run(ctx context.Context, source Source, timer clock.Clock, options Options) (Result, error) {
@@ -50,26 +50,29 @@ func Run(ctx context.Context, source Source, timer clock.Clock, options Options)
 	if options.LogLimit <= 0 {
 		options.LogLimit = 64 << 10
 	}
+	watchCtx, cancel := context.WithTimeout(ctx, options.Timeout)
+	defer cancel()
 	started, appeared, stable := timer.Now(), false, 0
+	deadline := started.Add(options.Timeout)
 	var previousSuccess string
 	for {
-		if timer.Now().Sub(started) >= options.Timeout {
-			return Result{}, fmt.Errorf("%w: overall timeout after %s", ErrTimeout, options.Timeout)
+		if !timer.Now().Before(deadline) {
+			return Result{}, timeoutError(options.Timeout)
 		}
-		before, err := source.HeadSHA(ctx)
+		before, err := call(watchCtx, timer, deadline, source.HeadSHA)
 		if err != nil {
-			return Result{}, fmt.Errorf("read PR head before snapshot: %w", err)
+			return Result{}, operationError("read PR head before snapshot", err, options.Timeout)
 		}
 		if before != options.RecordedSHA {
 			return Result{}, fmt.Errorf("safety stop: PR head changed from %s to %s", options.RecordedSHA, before)
 		}
-		snapshot, err := source.Snapshot(ctx)
+		snapshot, err := call(watchCtx, timer, deadline, source.Snapshot)
 		if err != nil {
-			return Result{}, fmt.Errorf("discover required checks: %w", err)
+			return Result{}, operationError("discover required checks", err, options.Timeout)
 		}
-		after, err := source.HeadSHA(ctx)
+		after, err := call(watchCtx, timer, deadline, source.HeadSHA)
 		if err != nil {
-			return Result{}, fmt.Errorf("read PR head after snapshot: %w", err)
+			return Result{}, operationError("read PR head after snapshot", err, options.Timeout)
 		}
 		if after != before || snapshot.SHA != options.RecordedSHA {
 			return Result{}, fmt.Errorf("safety stop: PR head changed while reading checks")
@@ -81,15 +84,17 @@ func Run(ctx context.Context, source Source, timer clock.Clock, options Options)
 		missing, pending, failed := evaluate(snapshot)
 		if len(failed) > 0 {
 			observation := failed[0]
-			logs, logErr := source.FailedLogs(ctx, observation, options.LogLimit)
+			logs, logErr := call(watchCtx, timer, deadline, func(ctx context.Context) (string, error) {
+				return source.FailedLogs(ctx, observation, options.LogLimit)
+			})
 			result := Result{State: Failed, Snapshot: snapshot, Failed: observation}
 			if logErr != nil {
+				if errors.Is(logErr, context.DeadlineExceeded) || errors.Is(logErr, ErrTimeout) {
+					return Result{}, timeoutError(options.Timeout)
+				}
 				result.Logs = "unavailable: " + logErr.Error()
 			} else {
 				result.Logs = bound(logs, options.LogLimit)
-			}
-			if observation.WorkflowRunID != nil {
-				result.RerunSuggestion = fmt.Sprintf("gh run rerun %d --failed", *observation.WorkflowRunID)
 			}
 			print(options.Output, "failed %s: %s\n", observation.Context, observation.URL)
 			return result, nil
@@ -120,10 +125,51 @@ func Run(ctx context.Context, source Source, timer clock.Clock, options Options)
 		if !appeared && timer.Now().Sub(started) >= options.AppearanceTimeout {
 			return Result{}, fmt.Errorf("%w: required suite did not appear after %s", ErrTimeout, options.AppearanceTimeout)
 		}
-		if err := timer.Sleep(ctx, options.PollInterval); err != nil {
-			return Result{}, err
+		if err := timer.Sleep(watchCtx, options.PollInterval); err != nil {
+			return Result{}, operationError("wait for next poll", err, options.Timeout)
 		}
 	}
+}
+
+type retryableRateLimit interface {
+	RetryAfter(time.Time) time.Duration
+}
+
+func call[T any](ctx context.Context, timer clock.Clock, deadline time.Time, operation func(context.Context) (T, error)) (T, error) {
+	for {
+		value, err := operation(ctx)
+		if err == nil {
+			return value, nil
+		}
+		if ctx.Err() != nil {
+			return value, ctx.Err()
+		}
+		var limited retryableRateLimit
+		if !errors.As(err, &limited) {
+			return value, err
+		}
+		wait := limited.RetryAfter(timer.Now())
+		if wait <= 0 {
+			wait = time.Second
+		}
+		if !timer.Now().Add(wait).Before(deadline) {
+			return value, ErrTimeout
+		}
+		if err := timer.Sleep(ctx, wait); err != nil {
+			return value, err
+		}
+	}
+}
+
+func operationError(operation string, err error, timeout time.Duration) error {
+	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, ErrTimeout) {
+		return timeoutError(timeout)
+	}
+	return fmt.Errorf("%s: %w", operation, err)
+}
+
+func timeoutError(timeout time.Duration) error {
+	return fmt.Errorf("%w: overall timeout after %s", ErrTimeout, timeout)
 }
 
 func evaluate(snapshot gh.Snapshot) (missing []gh.Requirement, pending, failed []gh.Observation) {

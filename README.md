@@ -14,7 +14,7 @@ The optional pull request may be a number or URL; when omitted, it is resolved f
 
 A normal invocation runs repository preflight and polls GitHub's active required-check configuration and exact-SHA check observations. It waits for configured checks to appear and requires two consecutive successful snapshots, so a newly pushed commit cannot pass while its suite is still absent. Optional checks are reported but do not gate success.
 
-When a required check fails, `gh babysit` prints its URL, bounded failed-job logs when an Actions run can be identified, and a safe `gh run rerun … --failed` suggestion without executing it. An unexpected PR-head change, ambiguous required-check configuration, unavailable GitHub data, or cancellation stops safely. `--appearance-timeout` bounds suite appearance; `--timeout` bounds the entire watch.
+When a required check fails, `gh babysit` prints its URL and bounded failed-job logs when an Actions run can be identified. It does not suggest or execute a rerun until a later milestone can safely classify the failure. An unexpected PR-head change, ambiguous required-check configuration, unavailable GitHub data, or cancellation stops safely. Rate-limit reset metadata is honored within the overall deadline. `--appearance-timeout` bounds suite appearance; `--timeout` bounds the entire watch, including in-flight GitHub and log operations.
 
 ## Installation and development
 

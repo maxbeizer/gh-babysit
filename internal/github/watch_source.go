@@ -32,7 +32,7 @@ func NewWatchSource(runner process.Runner, root string, pr domain.PullRequest) (
 func (s *WatchSource) HeadSHA(ctx context.Context) (string, error) {
 	result, err := s.Runner.Run(ctx, process.Request{Name: "gh", Dir: s.Root, Args: []string{"pr", "view", strconv.Itoa(s.PR.Number), "--repo", s.PR.Repository, "--json", "headRefOid"}})
 	if err != nil {
-		return "", fmt.Errorf("gh pr view: %w: %s", err, strings.TrimSpace(string(result.Stderr)))
+		return "", watchCommandError("gh pr view", result, err)
 	}
 	var response struct {
 		HeadRefOID string `json:"headRefOid"`
@@ -48,16 +48,25 @@ func (s *WatchSource) Snapshot(ctx context.Context) (Snapshot, error) {
 	return s.Provider.Discover(ctx, Request{Owner: parts[0], Repository: parts[1], BaseBranch: s.PR.BaseBranch, SHA: s.PR.HeadSHA})
 }
 
-func (s *WatchSource) FailedLogs(ctx context.Context, observation Observation, _ int) (string, error) {
+func (s *WatchSource) FailedLogs(ctx context.Context, observation Observation, limit int) (string, error) {
 	if observation.WorkflowRunID == nil {
 		return "", errors.New("failed check is not unambiguously mapped to a GitHub Actions run")
 	}
-	result, err := s.Runner.Run(ctx, process.Request{Name: "gh", Dir: s.Root, Args: []string{"run", "view", strconv.FormatInt(*observation.WorkflowRunID, 10), "--repo", s.PR.Repository, "--log-failed"}})
+	result, err := s.Runner.Run(ctx, process.Request{Name: "gh", Dir: s.Root, Args: []string{"run", "view", strconv.FormatInt(*observation.WorkflowRunID, 10), "--repo", s.PR.Repository, "--log-failed"}, StdoutLimit: limit, StderrLimit: 8 << 10})
 	if err != nil {
-		return "", fmt.Errorf("gh run view: %w: %s", err, strings.TrimSpace(string(result.Stderr)))
+		return "", watchCommandError("gh run view", result, err)
 	}
 	if len(result.Stdout) == 0 {
 		return "", errors.New("failed-check logs are empty or unavailable")
 	}
 	return string(result.Stdout), nil
+}
+
+func watchCommandError(operation string, result process.Result, err error) error {
+	message := strings.TrimSpace(string(result.Stderr))
+	status := statusFromGHError(message)
+	if retry, reset, ok := rateLimitMetadata(message); ok && (status == 403 || status == 429) {
+		return &RateLimitError{HTTPStatusError: &HTTPStatusError{Status: status, Body: message}, RetryAfterDuration: retry, ResetAt: reset}
+	}
+	return fmt.Errorf("%s: %w: %s", operation, err, message)
 }

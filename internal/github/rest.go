@@ -29,6 +29,20 @@ func (e *HTTPStatusError) Error() string {
 	return fmt.Sprintf("GitHub API returned HTTP %d: %s", e.Status, e.Body)
 }
 
+// RateLimitError carries GitHub's server-provided retry timing.
+type RateLimitError struct {
+	*HTTPStatusError
+	RetryAfterDuration time.Duration
+	ResetAt            time.Time
+}
+
+func (e *RateLimitError) RetryAfter(now time.Time) time.Duration {
+	if e.RetryAfterDuration > 0 {
+		return e.RetryAfterDuration
+	}
+	return max(e.ResetAt.Sub(now), 0)
+}
+
 // GHAPI invokes authenticated `gh api`. It never uses mutating HTTP methods.
 type GHAPI struct {
 	Runner process.Runner
@@ -48,7 +62,11 @@ func (c GHAPI) Get(ctx context.Context, endpoint string) ([]json.RawMessage, err
 	if err != nil {
 		message := strings.TrimSpace(string(result.Stderr))
 		if status := statusFromGHError(message); status != 0 {
-			return nil, &HTTPStatusError{Status: status, Body: message}
+			httpErr := &HTTPStatusError{Status: status, Body: message}
+			if retry, reset, ok := rateLimitMetadata(message); ok && (status == 403 || status == 429) {
+				return nil, &RateLimitError{HTTPStatusError: httpErr, RetryAfterDuration: retry, ResetAt: reset}
+			}
+			return nil, httpErr
 		}
 		return nil, fmt.Errorf("gh api %s: %w: %s", endpoint, err, message)
 	}
@@ -281,6 +299,8 @@ func normalizeStatus(state string) State {
 var (
 	actionsRunPattern = regexp.MustCompile(`/actions/runs/([0-9]+)(?:/|$)`)
 	ghStatusPattern   = regexp.MustCompile(`(?i)HTTP ([0-9]{3})`)
+	retryAfterPattern = regexp.MustCompile(`(?im)retry-after:\s*([0-9]+)`)
+	rateResetPattern  = regexp.MustCompile(`(?im)x-ratelimit-reset:\s*([0-9]+)`)
 )
 
 func statusFromGHError(message string) int {
@@ -290,6 +310,22 @@ func statusFromGHError(message string) int {
 	}
 	status, _ := strconv.Atoi(match[1])
 	return status
+}
+
+func rateLimitMetadata(message string) (time.Duration, time.Time, bool) {
+	if match := retryAfterPattern.FindStringSubmatch(message); len(match) == 2 {
+		seconds, err := strconv.ParseInt(match[1], 10, 64)
+		if err == nil {
+			return time.Duration(seconds) * time.Second, time.Time{}, true
+		}
+	}
+	if match := rateResetPattern.FindStringSubmatch(message); len(match) == 2 {
+		seconds, err := strconv.ParseInt(match[1], 10, 64)
+		if err == nil {
+			return 0, time.Unix(seconds, 0), true
+		}
+	}
+	return 0, time.Time{}, false
 }
 
 func workflowRunFromURL(value string) *int64 {

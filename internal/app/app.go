@@ -84,9 +84,6 @@ func NewCommandWithRunner(version string, runner process.Runner) *cobra.Command 
 			}
 			if watchResult.State == watcher.Failed {
 				fmt.Fprintf(cmd.OutOrStdout(), "Required check %s failed (%s).\nLogs:\n%s\n", watchResult.Failed.Context, watchResult.Failed.URL, watchResult.Logs)
-				if watchResult.RerunSuggestion != "" {
-					fmt.Fprintf(cmd.OutOrStdout(), "Safe suggestion (not executed): %s\n", watchResult.RerunSuggestion)
-				}
 				return exitcode.New(exitcode.NotFixable, fmt.Errorf("required check %s failed", watchResult.Failed.Context))
 			}
 			return nil

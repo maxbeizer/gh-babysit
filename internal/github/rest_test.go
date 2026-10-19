@@ -8,6 +8,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/maxbeizer/gh-babysit/internal/process"
 )
@@ -59,6 +60,17 @@ func TestGHAPIUsesReadOnlyPaginatedStructuredCall(t *testing.T) {
 	want := []string{"api", "--method", "GET", "--paginate", "--slurp", "-H", "Accept: application/vnd.github+json", "--hostname", "github.example.com", "repos/o/r/rules/branches/main"}
 	if got.Name != "gh" || !reflect.DeepEqual(got.Args, want) || len(pages) != 1 {
 		t.Fatalf("request = %#v, pages = %d; want gh %#v", got, len(pages), want)
+	}
+}
+
+func TestGHAPIPreservesRateLimitMetadata(t *testing.T) {
+	client := GHAPI{Runner: runnerFunc(func(context.Context, process.Request) (process.Result, error) {
+		return process.Result{Stderr: []byte("gh: rate limit exceeded (HTTP 429)\nRetry-After: 7\n")}, errors.New("exit status 1")
+	})}
+	_, err := client.Get(context.Background(), "endpoint")
+	var limited *RateLimitError
+	if !errors.As(err, &limited) || limited.RetryAfter(time.Unix(0, 0)) != 7*time.Second {
+		t.Fatalf("error = %v, want seven-second RateLimitError", err)
 	}
 }
 
