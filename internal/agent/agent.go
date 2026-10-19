@@ -2,8 +2,11 @@ package agent
 
 import (
 	"context"
+
 	"github.com/maxbeizer/gh-babysit/internal/domain"
 )
+
+const SchemaVersion = 1
 
 type Mode string
 
@@ -30,26 +33,31 @@ const (
 )
 
 type Request struct {
-	SchemaVersion               int
-	Workspace                   string
-	PullRequest                 domain.PullRequest
-	RecordedSHA                 string
-	FailedCheck                 domain.Check
-	Mode                        Mode
-	PriorDiagnosis, CurrentDiff string
-	LogPaths                    []string
-	Constraints                 []string
+	SchemaVersion  int                `json:"schema_version"`
+	Workspace      string             `json:"workspace"`
+	PullRequest    domain.PullRequest `json:"pull_request"`
+	RecordedSHA    string             `json:"recorded_sha"`
+	FailedCheck    domain.Check       `json:"failed_check"`
+	Mode           Mode               `json:"mode"`
+	PriorDiagnosis string             `json:"prior_diagnosis,omitempty"`
+	CurrentDiff    string             `json:"current_diff,omitempty"`
+	LogPaths       []string           `json:"log_paths"`
+	Constraints    []string           `json:"constraints"`
 }
+
 type Outcome struct {
-	SchemaVersion                           int
-	Classification                          Classification
-	ClassificationConfidence, FixConfidence Confidence
-	Diagnosis                               string
-	Plan, RelevantFiles                     []string
-	ValidationCommands                      [][]string
-	FixCompleted                            bool
-	Summary                                 string
+	SchemaVersion            int            `json:"schema_version"`
+	Classification           Classification `json:"classification"`
+	ClassificationConfidence Confidence     `json:"classification_confidence"`
+	FixConfidence            Confidence     `json:"fix_confidence"`
+	Diagnosis                string         `json:"diagnosis"`
+	Plan                     []string       `json:"plan"`
+	RelevantFiles            []string       `json:"relevant_files"`
+	ValidationCommands       [][]string     `json:"validation_commands"`
+	FixCompleted             bool           `json:"fix_completed"`
+	Summary                  string         `json:"summary"`
 }
+
 type Adapter interface {
 	Run(context.Context, Request) (Outcome, error)
 }
