@@ -87,6 +87,21 @@ func TestRunWaitsForAppearanceAndTwoStableSuccessfulSnapshots(t *testing.T) {
 	}
 }
 
+func TestRunRequiresTheSameSuccessfulSetTwice(t *testing.T) {
+	source := &fakeSource{snapshots: []gh.Snapshot{
+		snapshot([]gh.Requirement{req("build")}, obs("build", gh.StateSuccess)),
+		snapshot([]gh.Requirement{req("lint")}, obs("lint", gh.StateSuccess)),
+		snapshot([]gh.Requirement{req("lint")}, obs("lint", gh.StateSuccess)),
+	}}
+	result, err := Run(context.Background(), source, &fakeClock{}, Options{RecordedSHA: "sha", PollInterval: time.Second, AppearanceTimeout: time.Minute, Timeout: time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.State != Success || source.calls != 3 {
+		t.Fatalf("result=%+v calls=%d", result, source.calls)
+	}
+}
+
 func TestRunReportsOptionalFailureWithoutGatingSuccess(t *testing.T) {
 	s := snapshot([]gh.Requirement{req("build")}, obs("build", gh.StateSuccess), obs("lint", gh.StateFailure))
 	source := &fakeSource{snapshots: []gh.Snapshot{s, s}}

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"slices"
 	"strings"
 	"time"
 
@@ -50,6 +51,7 @@ func Run(ctx context.Context, source Source, timer clock.Clock, options Options)
 		options.LogLimit = 64 << 10
 	}
 	started, appeared, stable := timer.Now(), false, 0
+	var previousSuccess string
 	for {
 		if timer.Now().Sub(started) >= options.Timeout {
 			return Result{}, fmt.Errorf("%w: overall timeout after %s", ErrTimeout, options.Timeout)
@@ -96,14 +98,19 @@ func Run(ctx context.Context, source Source, timer clock.Clock, options Options)
 			appeared = true
 		}
 		if appeared && len(missing) == 0 && len(pending) == 0 {
-			stable++
+			currentSuccess := successfulSet(snapshot)
+			if currentSuccess == previousSuccess {
+				stable++
+			} else {
+				stable, previousSuccess = 1, currentSuccess
+			}
 			print(options.Output, "success (stable %d/2)\n", stable)
 			if stable == 2 {
 				reportOptional(options.Output, snapshot)
 				return Result{State: Success, Snapshot: snapshot}, nil
 			}
 		} else {
-			stable = 0
+			stable, previousSuccess = 0, ""
 			state := "waiting-required"
 			if !appeared {
 				state = "awaiting-suite"
@@ -150,6 +157,19 @@ func sameIdentity(a, b gh.Identity) bool {
 	}
 	return a.AppID == nil || *a.AppID == *b.AppID
 }
+func successfulSet(snapshot gh.Snapshot) string {
+	identities := make([]string, 0, len(snapshot.Requirements))
+	for _, requirement := range snapshot.Requirements {
+		app := "unqualified"
+		if requirement.AppID != nil {
+			app = fmt.Sprintf("app:%d", *requirement.AppID)
+		}
+		identities = append(identities, strings.ToLower(requirement.Context)+"\x00"+app)
+	}
+	slices.Sort(identities)
+	return strings.Join(identities, "\x01")
+}
+
 func reportOptional(out io.Writer, snapshot gh.Snapshot) {
 	for _, observation := range snapshot.Observations {
 		required := false
