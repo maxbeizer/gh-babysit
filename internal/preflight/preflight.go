@@ -110,6 +110,16 @@ func (c Checker) Run(ctx context.Context, argument string) (Result, error) {
 	prArgs := []string{"pr", "view"}
 	if argument != "" {
 		prArgs = append(prArgs, argument)
+	} else {
+		branchOut, branchErr := c.run(ctx, root, "git", "symbolic-ref", "--quiet", "--short", "HEAD")
+		branch := strings.TrimSpace(string(branchOut))
+		if branchErr != nil || branch == "" {
+			return Result{}, usage(PRResolution, "pass an existing PR number or URL, or check out its branch", branchErr)
+		}
+		// gh requires an explicit selector when --repo is used. Passing the
+		// checked-out branch preserves branch-based resolution without exposing
+		// gh's misleading "argument required" usage error.
+		prArgs = append(prArgs, branch)
 	}
 	prArgs = append(prArgs, "--repo", host+"/"+remoteRepository, "--json", "number,url,baseRefName,headRefName,headRefOid,headRepository,headRepositoryOwner,isCrossRepository")
 	prOut, err := c.run(ctx, root, "gh", prArgs...)

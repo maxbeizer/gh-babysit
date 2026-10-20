@@ -64,14 +64,30 @@ func TestRunRecordsVerifiedBaseline(t *testing.T) {
 	}
 }
 
-func TestCurrentBranchResolutionOmitsArgument(t *testing.T) {
+func TestCurrentBranchResolutionPassesBranchWithRepository(t *testing.T) {
 	rs := goodResponses()
 	explicit := key("gh", "pr", "view", "12", "--repo", "github.com/acme/widgets", "--json", "number,url,baseRefName,headRefName,headRefOid,headRepository,headRepositoryOwner,isCrossRepository")
-	current := key("gh", "pr", "view", "--repo", "github.com/acme/widgets", "--json", "number,url,baseRefName,headRefName,headRefOid,headRepository,headRepositoryOwner,isCrossRepository")
+	current := key("gh", "pr", "view", "topic", "--repo", "github.com/acme/widgets", "--json", "number,url,baseRefName,headRefName,headRefOid,headRepository,headRepositoryOwner,isCrossRepository")
 	rs[current] = rs[explicit]
 	delete(rs, explicit)
 	if _, err := (Checker{Runner: &fakeRunner{responses: rs}}).Run(context.Background(), ""); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestCurrentBranchResolutionFailureIsActionable(t *testing.T) {
+	rs := goodResponses()
+	explicit := key("gh", "pr", "view", "12", "--repo", "github.com/acme/widgets", "--json", "number,url,baseRefName,headRefName,headRefOid,headRepository,headRepositoryOwner,isCrossRepository")
+	current := key("gh", "pr", "view", "topic", "--repo", "github.com/acme/widgets", "--json", "number,url,baseRefName,headRefName,headRefOid,headRepository,headRepositoryOwner,isCrossRepository")
+	rs[current] = response{err: errors.New("no pull requests found for branch topic")}
+	delete(rs, explicit)
+
+	_, err := (Checker{Runner: &fakeRunner{responses: rs}}).Run(context.Background(), "")
+	if err == nil || !strings.Contains(err.Error(), "no pull requests found for branch topic") || !strings.Contains(err.Error(), "pass an existing PR number or URL") {
+		t.Fatalf("error = %v", err)
+	}
+	if strings.Contains(err.Error(), "argument required") {
+		t.Fatalf("error retained misleading gh usage: %v", err)
 	}
 }
 
