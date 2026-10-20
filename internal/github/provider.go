@@ -46,15 +46,17 @@ type Requirement struct {
 // Observation describes one check run or commit status on the exact requested SHA.
 type Observation struct {
 	Identity
-	Source        Source     `json:"source"`
-	ID            int64      `json:"id"`
-	State         State      `json:"state"`
-	RawState      string     `json:"raw_state"`
-	URL           string     `json:"url,omitempty"`
-	WorkflowRunID *int64     `json:"workflow_run_id,omitempty"`
-	Attempt       int        `json:"attempt,omitempty"`
-	StartedAt     *time.Time `json:"started_at,omitempty"`
-	CompletedAt   *time.Time `json:"completed_at,omitempty"`
+	Source             Source     `json:"source"`
+	ID                 int64      `json:"id"`
+	State              State      `json:"state"`
+	RawState           string     `json:"raw_state"`
+	Conclusion         string     `json:"conclusion,omitempty"`
+	WorkflowConclusion string     `json:"workflow_conclusion,omitempty"`
+	URL                string     `json:"url,omitempty"`
+	WorkflowRunID      *int64     `json:"workflow_run_id,omitempty"`
+	Attempt            int        `json:"attempt,omitempty"`
+	StartedAt          *time.Time `json:"started_at,omitempty"`
+	CompletedAt        *time.Time `json:"completed_at,omitempty"`
 }
 
 // Snapshot contains authoritative configuration and observations for one commit.

@@ -29,6 +29,26 @@ func (e *HTTPStatusError) Error() string {
 	return fmt.Sprintf("GitHub API returned HTTP %d: %s", e.Status, e.Body)
 }
 
+// IsAuthenticationError reports whether a watch-time GitHub failure requires reauthentication.
+func IsAuthenticationError(err error) bool {
+	var status *HTTPStatusError
+	return errors.As(err, &status) && status.Status == 401
+}
+
+// RateLimitError carries GitHub's server-provided retry timing.
+type RateLimitError struct {
+	*HTTPStatusError
+	RetryAfterDuration time.Duration
+	ResetAt            time.Time
+}
+
+func (e *RateLimitError) RetryAfter(now time.Time) time.Duration {
+	if e.RetryAfterDuration > 0 {
+		return e.RetryAfterDuration
+	}
+	return max(e.ResetAt.Sub(now), 0)
+}
+
 // GHAPI invokes authenticated `gh api`. It never uses mutating HTTP methods.
 type GHAPI struct {
 	Runner process.Runner
@@ -39,21 +59,25 @@ func (c GHAPI) Get(ctx context.Context, endpoint string) ([]json.RawMessage, err
 	if c.Runner == nil {
 		return nil, errors.New("gh API runner is nil")
 	}
-	args := []string{"api", "--method", "GET", "--paginate", "--slurp", "-H", "Accept: application/vnd.github+json"}
+	args := []string{"api", "--method", "GET", "--paginate", "--include", "-H", "Accept: application/vnd.github+json"}
 	if c.Host != "" {
 		args = append(args, "--hostname", c.Host)
 	}
 	args = append(args, endpoint)
 	result, err := c.Runner.Run(ctx, process.Request{Name: "gh", Args: args})
 	if err != nil {
-		message := strings.TrimSpace(string(result.Stderr))
-		if status := statusFromGHError(message); status != 0 {
-			return nil, &HTTPStatusError{Status: status, Body: message}
+		message := strings.TrimSpace(string(append(append([]byte(nil), result.Stdout...), result.Stderr...)))
+		if status, response := latestHTTPResponse(message); status != 0 {
+			httpErr := &HTTPStatusError{Status: status, Body: message}
+			if retry, reset, ok := rateLimitMetadata(response); ok && isRateLimited(status, response) {
+				return nil, &RateLimitError{HTTPStatusError: httpErr, RetryAfterDuration: retry, ResetAt: reset}
+			}
+			return nil, httpErr
 		}
 		return nil, fmt.Errorf("gh api %s: %w: %s", endpoint, err, message)
 	}
-	var pages []json.RawMessage
-	if err := json.Unmarshal(result.Stdout, &pages); err != nil {
+	pages, err := parseIncludedResponses(result.Stdout)
+	if err != nil {
 		return nil, fmt.Errorf("decode gh api response for %s: %w", endpoint, err)
 	}
 	return pages, nil
@@ -153,7 +177,7 @@ func (b RESTBackend) checkRuns(ctx context.Context, req Request) ([]Observation,
 		return nil, err
 	}
 	var result []Observation
-	attempts := make(map[int64]int)
+	workflowRuns := make(map[int64]workflowRunMetadata)
 	for _, page := range pages {
 		var response struct {
 			CheckRuns []struct {
@@ -175,50 +199,58 @@ func (b RESTBackend) checkRuns(ctx context.Context, req Request) ([]Observation,
 		for _, run := range response.CheckRuns {
 			appID := run.App.ID
 			workflowRunID := workflowRunFromURL(run.DetailsURL)
-			attempt := 0
+			metadata := workflowRunMetadata{}
 			if workflowRunID != nil {
 				var ok bool
-				attempt, ok = attempts[*workflowRunID]
+				metadata, ok = workflowRuns[*workflowRunID]
 				if !ok {
-					attempt, err = b.workflowRunAttempt(ctx, req, *workflowRunID)
+					metadata, err = b.workflowRun(ctx, req, *workflowRunID)
 					if err != nil {
 						return nil, fmt.Errorf("read workflow run %d for check run %d: %w", *workflowRunID, run.ID, err)
 					}
-					attempts[*workflowRunID] = attempt
+					workflowRuns[*workflowRunID] = metadata
 				}
 			}
 			result = append(result, Observation{
-				Identity:      Identity{Context: run.Name, AppID: &appID},
-				Source:        SourceCheckRun,
-				ID:            run.ID,
-				State:         normalizeCheckRun(run.Status, run.Conclusion),
-				RawState:      firstNonempty(run.Conclusion, run.Status),
-				URL:           run.DetailsURL,
-				WorkflowRunID: workflowRunID,
-				Attempt:       attempt,
-				StartedAt:     parseTime(run.StartedAt), CompletedAt: parseTime(run.CompletedAt),
+				Identity:           Identity{Context: run.Name, AppID: &appID},
+				Source:             SourceCheckRun,
+				ID:                 run.ID,
+				State:              normalizeCheckRun(run.Status, run.Conclusion),
+				RawState:           firstNonempty(run.Conclusion, run.Status),
+				Conclusion:         run.Conclusion,
+				WorkflowConclusion: metadata.Conclusion,
+				URL:                run.DetailsURL,
+				WorkflowRunID:      workflowRunID,
+				Attempt:            metadata.Attempt,
+				StartedAt:          parseTime(run.StartedAt), CompletedAt: parseTime(run.CompletedAt),
 			})
 		}
 	}
 	return result, nil
 }
 
-func (b RESTBackend) workflowRunAttempt(ctx context.Context, req Request, id int64) (int, error) {
+type workflowRunMetadata struct {
+	Attempt    int
+	Conclusion string
+}
+
+func (b RESTBackend) workflowRun(ctx context.Context, req Request, id int64) (workflowRunMetadata, error) {
 	endpoint := fmt.Sprintf("repos/%s/%s/actions/runs/%d", escape(req.Owner), escape(req.Repository), id)
 	pages, err := b.API.Get(ctx, endpoint)
 	if err != nil {
-		return 0, err
+		return workflowRunMetadata{}, err
 	}
 	var run struct {
-		RunAttempt int `json:"run_attempt"`
+		RunAttempt int    `json:"run_attempt"`
+		Conclusion string `json:"conclusion"`
 	}
 	if err := decodeSingle(pages, &run); err != nil {
-		return 0, err
+		return workflowRunMetadata{}, err
 	}
 	if run.RunAttempt < 1 {
-		return 0, errors.New("workflow run omitted run_attempt")
+		return workflowRunMetadata{}, errors.New("workflow run omitted run_attempt")
 	}
-	return run.RunAttempt, nil
+	return workflowRunMetadata{Attempt: run.RunAttempt, Conclusion: run.Conclusion}, nil
 }
 
 func (b RESTBackend) statuses(ctx context.Context, req Request) ([]Observation, error) {
@@ -280,16 +312,56 @@ func normalizeStatus(state string) State {
 
 var (
 	actionsRunPattern = regexp.MustCompile(`/actions/runs/([0-9]+)(?:/|$)`)
-	ghStatusPattern   = regexp.MustCompile(`(?i)HTTP ([0-9]{3})`)
+	ghStatusPattern   = regexp.MustCompile(`(?i)HTTP(?:/[0-9.]+)?[ :]([0-9]{3})`)
+	retryAfterPattern = regexp.MustCompile(`(?im)retry-after:\s*([0-9]+)`)
+	rateResetPattern  = regexp.MustCompile(`(?im)x-ratelimit-reset:\s*([0-9]+)`)
+	rateRemainPattern = regexp.MustCompile(`(?im)x-ratelimit-remaining:\s*([0-9]+)`)
 )
 
 func statusFromGHError(message string) int {
-	match := ghStatusPattern.FindStringSubmatch(message)
-	if len(match) != 2 {
-		return 0
-	}
-	status, _ := strconv.Atoi(match[1])
+	status, _ := latestHTTPResponse(message)
 	return status
+}
+
+func latestHTTPResponse(message string) (int, string) {
+	matches := ghStatusPattern.FindAllStringSubmatchIndex(message, -1)
+	if len(matches) == 0 {
+		return 0, ""
+	}
+	match := matches[len(matches)-1]
+	status, _ := strconv.Atoi(message[match[2]:match[3]])
+	return status, message[match[0]:]
+}
+
+func rateLimitMetadata(message string) (time.Duration, time.Time, bool) {
+	if matches := retryAfterPattern.FindAllStringSubmatch(message, -1); len(matches) > 0 {
+		seconds, err := strconv.ParseInt(matches[len(matches)-1][1], 10, 64)
+		if err == nil {
+			return time.Duration(seconds) * time.Second, time.Time{}, true
+		}
+	}
+	if matches := rateResetPattern.FindAllStringSubmatch(message, -1); len(matches) > 0 {
+		seconds, err := strconv.ParseInt(matches[len(matches)-1][1], 10, 64)
+		if err == nil {
+			return 0, time.Unix(seconds, 0), true
+		}
+	}
+	return 0, time.Time{}, false
+}
+
+func isRateLimited(status int, message string) bool {
+	if status == 429 {
+		return true
+	}
+	if status != 403 {
+		return false
+	}
+	remaining := rateRemainPattern.FindAllStringSubmatch(message, -1)
+	if len(remaining) > 0 && remaining[len(remaining)-1][1] == "0" {
+		return true
+	}
+	lower := strings.ToLower(message)
+	return strings.Contains(lower, "rate limit") || strings.Contains(lower, "secondary rate") || strings.Contains(lower, "abuse detection")
 }
 
 func workflowRunFromURL(value string) *int64 {
@@ -302,6 +374,35 @@ func workflowRunFromURL(value string) *int64 {
 		return nil
 	}
 	return &id
+}
+
+func parseIncludedResponses(output []byte) ([]json.RawMessage, error) {
+	text := strings.ReplaceAll(string(output), "\r\n", "\n")
+	var pages []json.RawMessage
+	for len(strings.TrimSpace(text)) > 0 {
+		text = strings.TrimLeft(text, "\n")
+		if !strings.HasPrefix(text, "HTTP/") {
+			return nil, errors.New("gh api --include response omitted HTTP status line")
+		}
+		headerEnd := strings.Index(text, "\n\n")
+		if headerEnd < 0 {
+			return nil, errors.New("gh api --include response omitted header terminator")
+		}
+		text = text[headerEnd+2:]
+		next := strings.Index(text, "\nHTTP/")
+		body := text
+		if next >= 0 {
+			body, text = text[:next], text[next+1:]
+		} else {
+			text = ""
+		}
+		body = strings.TrimSpace(body)
+		if !json.Valid([]byte(body)) {
+			return nil, errors.New("gh api --include response contained invalid JSON")
+		}
+		pages = append(pages, json.RawMessage(body))
+	}
+	return pages, nil
 }
 
 func decodeSingle(pages []json.RawMessage, target any) error {

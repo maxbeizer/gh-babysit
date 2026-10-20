@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"os/exec"
 	"strings"
 	"testing"
 
+	"github.com/maxbeizer/gh-babysit/internal/exitcode"
 	"github.com/maxbeizer/gh-babysit/internal/process"
 )
 
@@ -20,8 +22,8 @@ func successfulPreflightRunner(_ context.Context, r process.Request) (process.Re
 	command := r.Name + " " + strings.Join(r.Args, " ")
 	outputs := map[string]string{
 		"git rev-parse --show-toplevel": "/repo\n", "git remote get-url origin": "git@github.com:acme/widgets.git\n",
-		"git status --porcelain=v1 -z --untracked-files=all": "", "gh repo view --json nameWithOwner,url,viewerPermission": `{"nameWithOwner":"acme/widgets","viewerPermission":"WRITE"}`,
-		"gh pr view 123 --json number,url,baseRefName,headRefName,headRefOid,headRepository,headRepositoryOwner,isCrossRepository": `{"number":123,"url":"https://github.com/acme/widgets/pull/123","baseRefName":"main","headRefName":"topic","headRefOid":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","headRepository":{"name":"widgets"},"headRepositoryOwner":{"login":"acme"}}`,
+		"git status --porcelain=v1 -z --untracked-files=all": "", "gh repo view github.com/acme/widgets --json nameWithOwner,url,viewerPermission": `{"nameWithOwner":"acme/widgets","viewerPermission":"WRITE"}`,
+		"gh pr view 123 --repo github.com/acme/widgets --json number,url,baseRefName,headRefName,headRefOid,headRepository,headRepositoryOwner,isCrossRepository": `{"number":123,"url":"https://github.com/acme/widgets/pull/123","baseRefName":"main","headRefName":"topic","headRefOid":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","headRepository":{"name":"widgets"},"headRepositoryOwner":{"login":"acme"}}`,
 		"git symbolic-ref --quiet --short HEAD": "topic\n", "git rev-parse HEAD": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n",
 		"git config --get branch.topic.remote": "origin\n", "git rev-parse --abbrev-ref --symbolic-full-name @{push}": "origin/topic\n",
 		"git remote get-url --push origin": "git@github.com:acme/widgets.git\n", "git ls-files -s -z": "index\x00",
@@ -31,6 +33,18 @@ func successfulPreflightRunner(_ context.Context, r process.Request) (process.Re
 	}
 	if command == "git config --get branch.topic.pushRemote" || command == "git config --get remote.pushDefault" {
 		return process.Result{}, fmt.Errorf("unset")
+	}
+	if command == "gh pr view 123 --repo github.com/acme/widgets --json headRefOid,baseRefName" {
+		return process.Result{Stdout: []byte(`{"headRefOid":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","baseRefName":"main"}`)}, nil
+	}
+	if strings.Contains(command, "required_status_checks") {
+		return process.Result{Stdout: []byte("HTTP/2.0 200 OK\n\n{\"contexts\":[],\"checks\":[]}")}, nil
+	}
+	if strings.Contains(command, "rules/branches") || strings.Contains(command, "/statuses?") {
+		return process.Result{Stdout: []byte("HTTP/2.0 200 OK\n\n[]")}, nil
+	}
+	if strings.Contains(command, "/check-runs?") {
+		return process.Result{Stdout: []byte("HTTP/2.0 200 OK\n\n{\"check_runs\":[]}")}, nil
 	}
 	out, ok := outputs[command]
 	if !ok {
@@ -68,14 +82,45 @@ func TestCommandAcceptsDocumentedSurface(t *testing.T) {
 	var out bytes.Buffer
 	cmd := NewCommandWithRunner("dev", runnerFunc(successfulPreflightRunner))
 	cmd.SetOut(&out)
-	cmd.SetArgs([]string{"123", "--auto", "--agent-command", "agent", "--poll-interval", "1s", "--appearance-timeout", "2s", "--timeout", "3s"})
+	cmd.SetArgs([]string{"123", "--auto", "--agent-command", "agent", "--poll-interval", "1ms", "--appearance-timeout", "2s", "--timeout", "3s"})
 	if err := cmd.Execute(); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(out.String(), "Preflight passed") || !strings.Contains(out.String(), "not implemented yet") {
+	if !strings.Contains(out.String(), "Watching required checks") || !strings.Contains(out.String(), "success (stable 2/2)") {
 		t.Fatalf("output = %q", out.String())
 	}
 }
+func TestCommandPreservesWatchTimeAuthenticationClassification(t *testing.T) {
+	runner := runnerFunc(func(ctx context.Context, request process.Request) (process.Result, error) {
+		command := request.Name + " " + strings.Join(request.Args, " ")
+		if strings.Contains(command, "rules/branches") {
+			return process.Result{Stdout: []byte("HTTP/2.0 401 Unauthorized\n\n{}\n"), Stderr: []byte("gh: authentication required\n")}, fmt.Errorf("exit status 1")
+		}
+		return successfulPreflightRunner(ctx, request)
+	})
+	cmd := NewCommandWithRunner("dev", runner)
+	cmd.SetArgs([]string{"123", "--poll-interval", "1ms", "--timeout", "1s"})
+	err := cmd.Execute()
+	if err == nil || exitcode.Code(err) != 2 {
+		t.Fatalf("error=%v code=%d", err, exitcode.Code(err))
+	}
+}
+
+func TestCommandClassifiesMissingGHDuringWatchAsUsage(t *testing.T) {
+	runner := runnerFunc(func(ctx context.Context, request process.Request) (process.Result, error) {
+		command := request.Name + " " + strings.Join(request.Args, " ")
+		if command == "gh pr view 123 --repo github.com/acme/widgets --json headRefOid,baseRefName" {
+			return process.Result{}, fmt.Errorf("start gh: %w", exec.ErrNotFound)
+		}
+		return successfulPreflightRunner(ctx, request)
+	})
+	cmd := NewCommandWithRunner("dev", runner)
+	cmd.SetArgs([]string{"123", "--timeout", "1s"})
+	if err := cmd.Execute(); err == nil || exitcode.Code(err) != 2 {
+		t.Fatalf("error=%v code=%d", err, exitcode.Code(err))
+	}
+}
+
 func TestCommandRejectsExtraArguments(t *testing.T) {
 	cmd := NewCommand("dev")
 	cmd.SetArgs([]string{"1", "2"})

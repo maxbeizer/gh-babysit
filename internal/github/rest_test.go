@@ -8,6 +8,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/maxbeizer/gh-babysit/internal/process"
 )
@@ -50,15 +51,64 @@ func TestGHAPIUsesReadOnlyPaginatedStructuredCall(t *testing.T) {
 	var got process.Request
 	client := GHAPI{Host: "github.example.com", Runner: runnerFunc(func(_ context.Context, request process.Request) (process.Result, error) {
 		got = request
-		return process.Result{Stdout: []byte(`[{"ok":true}]`)}, nil
+		return process.Result{Stdout: []byte("HTTP/2.0 200 OK\r\nX-RateLimit-Remaining: 10\r\n\r\n{\"ok\":true}\n")}, nil
 	})}
 	pages, err := client.Get(context.Background(), "repos/o/r/rules/branches/main")
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"api", "--method", "GET", "--paginate", "--slurp", "-H", "Accept: application/vnd.github+json", "--hostname", "github.example.com", "repos/o/r/rules/branches/main"}
+	want := []string{"api", "--method", "GET", "--paginate", "--include", "-H", "Accept: application/vnd.github+json", "--hostname", "github.example.com", "repos/o/r/rules/branches/main"}
 	if got.Name != "gh" || !reflect.DeepEqual(got.Args, want) || len(pages) != 1 {
 		t.Fatalf("request = %#v, pages = %d; want gh %#v", got, len(pages), want)
+	}
+}
+
+func TestGHAPIPreservesRateLimitMetadata(t *testing.T) {
+	client := GHAPI{Runner: runnerFunc(func(context.Context, process.Request) (process.Result, error) {
+		return process.Result{Stdout: []byte("HTTP/2.0 429 Too Many Requests\r\nRetry-After: 7\r\n\r\n{}\n"), Stderr: []byte("gh: rate limit exceeded\n")}, errors.New("exit status 1")
+	})}
+	_, err := client.Get(context.Background(), "endpoint")
+	var limited *RateLimitError
+	if !errors.As(err, &limited) || limited.RetryAfter(time.Unix(0, 0)) != 7*time.Second {
+		t.Fatalf("error = %v, want seven-second RateLimitError", err)
+	}
+}
+
+func TestGHAPIUsesLatestPaginatedFailureMetadata(t *testing.T) {
+	client := GHAPI{Runner: runnerFunc(func(context.Context, process.Request) (process.Result, error) {
+		stdout := "HTTP/2.0 200 OK\r\nX-RateLimit-Remaining: 10\r\nX-RateLimit-Reset: 1\r\n\r\n[]\n" +
+			"HTTP/2.0 429 Too Many Requests\r\nRetry-After: 9\r\n\r\n{}\n"
+		return process.Result{Stdout: []byte(stdout)}, errors.New("exit status 1")
+	})}
+	_, err := client.Get(context.Background(), "endpoint")
+	var limited *RateLimitError
+	if !errors.As(err, &limited) || limited.Status != 429 || limited.RetryAfter(time.Time{}) != 9*time.Second {
+		t.Fatalf("error=%v", err)
+	}
+}
+
+func TestGHAPIDoesNotPairEarlierPageMetadataWithLatestFailure(t *testing.T) {
+	client := GHAPI{Runner: runnerFunc(func(context.Context, process.Request) (process.Result, error) {
+		stdout := "HTTP/2.0 200 OK\r\nRetry-After: 3\r\n\r\n[]\nHTTP/2.0 429 Too Many Requests\r\n\r\n{}\n"
+		return process.Result{Stdout: []byte(stdout)}, errors.New("exit status 1")
+	})}
+	_, err := client.Get(context.Background(), "endpoint")
+	var limited *RateLimitError
+	var status *HTTPStatusError
+	if errors.As(err, &limited) || !errors.As(err, &status) || status.Status != 429 {
+		t.Fatalf("error=%v", err)
+	}
+}
+
+func TestGHAPIDoesNotRetryPermission403WithResetHeader(t *testing.T) {
+	client := GHAPI{Runner: runnerFunc(func(context.Context, process.Request) (process.Result, error) {
+		return process.Result{Stdout: []byte("HTTP/2.0 403 Forbidden\r\nX-RateLimit-Remaining: 42\r\nX-RateLimit-Reset: 99\r\n\r\n{}\n")}, errors.New("exit status 1")
+	})}
+	_, err := client.Get(context.Background(), "endpoint")
+	var limited *RateLimitError
+	var status *HTTPStatusError
+	if errors.As(err, &limited) || !errors.As(err, &status) || status.Status != 403 {
+		t.Fatalf("error=%v", err)
 	}
 }
 
@@ -79,8 +129,8 @@ func TestRESTProviderNormalizesAuthoritativeSnapshot(t *testing.T) {
 		"rules/branches":         {fixture(t, "rules.json")},
 		"check-runs":             {fixture(t, "check-runs.json")},
 		"statuses":               {fixture(t, "statuses.json")},
-		"actions/runs/500":       {json.RawMessage(`{"run_attempt":1}`)},
-		"actions/runs/501":       {json.RawMessage(`{"run_attempt":2}`)},
+		"actions/runs/500":       {json.RawMessage(`{"run_attempt":1,"conclusion":"failure"}`)},
+		"actions/runs/501":       {json.RawMessage(`{"run_attempt":2,"conclusion":"success"}`)},
 	}}
 	got, err := NewProvider(RESTBackend{API: api}).Discover(context.Background(), Request{Owner: "o", Repository: "r", BaseBranch: "main", SHA: "abc"})
 	if err != nil {
@@ -104,7 +154,7 @@ func TestRESTProviderNormalizesAuthoritativeSnapshot(t *testing.T) {
 		t.Fatalf("observations = %d, want latest three identities/sources: %+v", len(got.Observations), got.Observations)
 	}
 	build := got.Observations[0]
-	if build.Context != "ci/build" || build.ID != 101 || build.State != StateSuccess || build.Attempt != 2 || build.WorkflowRunID == nil || *build.WorkflowRunID != 501 {
+	if build.Context != "ci/build" || build.ID != 101 || build.State != StateSuccess || build.Attempt != 2 || build.WorkflowConclusion != "success" || build.WorkflowRunID == nil || *build.WorkflowRunID != 501 {
 		t.Fatalf("rerun was not normalized to latest attempt: %+v", build)
 	}
 	legacy := got.Observations[1]
