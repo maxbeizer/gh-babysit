@@ -43,6 +43,71 @@ func TestFailureSummarizesActionsLogs(t *testing.T) {
 	}
 }
 
+func TestFailureSummarizesRealAggregateLogShape(t *testing.T) {
+	runID := int64(39332730470)
+	tests := []struct {
+		name     string
+		ansi     string
+		unwanted string
+	}{
+		{name: "caret-rendered ANSI", ansi: `^[[36;1m`, unwanted: `^[[`},
+		{name: "escape-byte ANSI", ansi: "\x1b[36;1m", unwanted: "\x1b["},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			logs := strings.ReplaceAll(strings.Join([]string{
+				"golden-jobs-results\tUNKNOWN STEP\t2026-02-02T18:05:01.000Z ##[group]Run echo \"time_in_ms=$(date +%s%3N)\" >> $GITHUB_OUTPUT",
+				"golden-jobs-results\tUNKNOWN STEP\t2026-02-02T18:05:02.000Z ##[group]Run github/internal-actions@main",
+				"golden-jobs-results\tUNKNOWN STEP\t2026-02-02T18:05:03.000Z ##[group]Run RUNNER_WORK_DIR=\"...\"",
+				"golden-jobs-results\tUNKNOWN STEP\t2026-02-02T18:05:04.000Z " + tt.ansi + `if [[ -n "$failed_jobs" ]]; then` + "\x1b[0m",
+				`golden-jobs-results\tUNKNOWN STEP\t2026-02-02T18:05:05.000Z   failed_jobs="$(jq -r '.jobs[] | select(.conclusion == "failure")')"`,
+				`golden-jobs-results\tUNKNOWN STEP\t2026-02-02T18:05:06.000Z ##[error]golden-jobs (...) / github-reposd-multitenant failed child (https://github.com/github/github/actions/runs/39332730470/job/118334691274)`,
+				`golden-jobs-results\tUNKNOWN STEP\t2026-02-02T18:05:07.000Z ##[error]golden-jobs (...) / github-reposd failed child (https://github.com/github/github/actions/runs/39332730470/job/118334691128)`,
+				`golden-jobs-results\tUNKNOWN STEP\t2026-02-02T18:05:08.000Z {"name":"github-reposd","conclusion":"failure"},`,
+				`golden-jobs-results\tUNKNOWN STEP\t2026-02-02T18:05:09.000Z Recommendation: run bin/ci-summary for failure details`,
+			}, "\n"), `\t`, "\t")
+			var out bytes.Buffer
+			Failure(&out, FailureOptions{
+				Check: gh.Observation{
+					Identity:      gh.Identity{Context: "golden-jobs-results"},
+					URL:           "https://github.com/github/github/actions/runs/39332730470/job/118343050137",
+					WorkflowRunID: &runID,
+				},
+				Repository: "github/github",
+				Logs:       logs,
+			})
+			got := out.String()
+			for _, want := range []string{
+				"Required check failed: golden-jobs-results",
+				"- github-reposd-multitenant\n    https://github.com/github/github/actions/runs/39332730470/job/118334691274",
+				"- github-reposd\n    https://github.com/github/github/actions/runs/39332730470/job/118334691128",
+				"Suggested next step:\n  Recommendation: run bin/ci-summary for failure details",
+				"gh run view 39332730470 --log-failed --repo github/github",
+			} {
+				if !strings.Contains(got, want) {
+					t.Errorf("output missing %q:\n%s", want, got)
+				}
+			}
+			for _, unwanted := range []string{
+				"##[group]", "##[error]", "##[]", "UNKNOWN STEP", tt.unwanted,
+				"time_in_ms", "github/internal-actions@main", "RUNNER_WORK_DIR", "failed_jobs", `"conclusion":"failure"`,
+			} {
+				if strings.Contains(got, unwanted) {
+					t.Errorf("output contains %q:\n%s", unwanted, got)
+				}
+			}
+			for _, childURL := range []string{
+				"https://github.com/github/github/actions/runs/39332730470/job/118334691274",
+				"https://github.com/github/github/actions/runs/39332730470/job/118334691128",
+			} {
+				if strings.Count(got, childURL) != 1 {
+					t.Errorf("child URL should appear once: %s\n%s", childURL, got)
+				}
+			}
+		})
+	}
+}
+
 func TestFailureExtractsOrdinaryAndAggregateFailures(t *testing.T) {
 	tests := []struct {
 		name     string

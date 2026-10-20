@@ -11,11 +11,14 @@ import (
 )
 
 var (
-	ansiPattern      = regexp.MustCompile(`\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1b\\))`)
-	timestampPattern = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z\s*`)
-	urlPattern       = regexp.MustCompile(`https?://[^\s<>()]+`)
-	guidancePattern  = regexp.MustCompile(`(?i)\b(?:run|try|use|next step|recommended|recommendation)\b`)
-	signalPattern    = regexp.MustCompile(`(?i)\b(?:error|fail(?:ed|ure)?|fatal|panic|exception|timed out)\b`)
+	ansiPattern         = regexp.MustCompile(`\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1b\\))`)
+	caretANSIPattern    = regexp.MustCompile(`\^\[\[[0-?]*[ -/]*[@-~]`)
+	timestampPattern    = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z\s*`)
+	actionsCommand      = regexp.MustCompile(`##\[[^]]*\](?:[^\r\n]*?::)?`)
+	urlPattern          = regexp.MustCompile(`https?://[^\s<>()]+`)
+	explicitGuidance    = regexp.MustCompile(`(?i)\b(?:next steps?|recommended|recommendation|you (?:can|should)|please (?:run|use))\b`)
+	signalPattern       = regexp.MustCompile(`(?i)\b(?:error|fail(?:ed|ure)?|fatal|panic|exception|timed out)\b`)
+	failureAffixPattern = regexp.MustCompile(`(?i)^(?:error\s*:\s*|fail(?:ed|ure)?\s+)|\s+(?:error|fail(?:ed|ure)?)(?:\s+child)?\s*$`)
 )
 
 // FailureOptions contains the already bounded failed-check log and enough
@@ -83,9 +86,12 @@ func failedJobs(lines []string, checkURL string) []failedJob {
 		if url == "" || url == checkURL {
 			continue
 		}
-		name := strings.TrimSpace(strings.TrimSuffix(line, urls[len(urls)-1]))
-		name = strings.Trim(name, " -*:[]()")
-		name = signalPattern.ReplaceAllString(name, "")
+		name := strings.TrimSpace(strings.Replace(line, urls[len(urls)-1], "", 1))
+		name = strings.TrimRight(name, " \t()")
+		if slash := strings.LastIndex(name, " / "); slash >= 0 {
+			name = name[slash+3:]
+		}
+		name = strings.TrimSpace(failureAffixPattern.ReplaceAllString(name, ""))
 		name = strings.Trim(name, " -*:[]()")
 		if name == "" || seen[url] {
 			continue
@@ -101,7 +107,7 @@ func failedJobs(lines []string, checkURL string) []failedJob {
 
 func guidanceLines(lines []string) []string {
 	return selectLines(lines, 3, func(line string) bool {
-		return guidancePattern.MatchString(line) || strings.Contains(line, "bin/ci-summary")
+		return !implementationLine(line) && (explicitGuidance.MatchString(line) || strings.Contains(line, "bin/ci-summary"))
 	})
 }
 
@@ -109,11 +115,11 @@ func signalLines(lines []string) []string {
 	const limit = 8
 	selected := map[int]bool{}
 	for i, line := range lines {
-		if !signalPattern.MatchString(line) || urlPattern.MatchString(line) {
+		if !signalPattern.MatchString(line) || urlPattern.MatchString(line) || implementationLine(line) {
 			continue
 		}
 		for j := max(0, i-1); j <= min(len(lines)-1, i+1); j++ {
-			if lines[j] != "" && !urlPattern.MatchString(lines[j]) && !guidancePattern.MatchString(lines[j]) {
+			if lines[j] != "" && !urlPattern.MatchString(lines[j]) && !explicitGuidance.MatchString(lines[j]) && !implementationLine(lines[j]) {
 				selected[j] = true
 			}
 		}
@@ -130,6 +136,15 @@ func signalLines(lines []string) []string {
 		}
 	}
 	return result
+}
+
+func implementationLine(line string) bool {
+	trimmed := strings.TrimSpace(line)
+	return strings.Contains(trimmed, "failed_jobs") ||
+		strings.HasPrefix(trimmed, "{") || strings.HasPrefix(trimmed, "[") ||
+		strings.HasPrefix(trimmed, "if [[") || strings.HasPrefix(trimmed, "if [") ||
+		strings.HasPrefix(trimmed, "for ") || strings.HasPrefix(trimmed, "while ") ||
+		strings.HasPrefix(trimmed, "Run ")
 }
 
 func selectLines(lines []string, limit int, match func(string) bool) []string {
@@ -152,6 +167,7 @@ func cleanLines(logs string) []string {
 	result := make([]string, 0, len(raw))
 	for _, line := range raw {
 		line = ansiPattern.ReplaceAllString(line, "")
+		line = caretANSIPattern.ReplaceAllString(line, "")
 		fields := strings.Split(line, "\t")
 		for i, field := range fields {
 			trimmed := strings.TrimSpace(field)
@@ -162,6 +178,7 @@ func cleanLines(logs string) []string {
 		}
 		line = timestampPattern.ReplaceAllString(strings.TrimSpace(line), "")
 		line = strings.TrimSpace(strings.TrimPrefix(line, "UNKNOWN STEP"))
+		line = strings.TrimSpace(actionsCommand.ReplaceAllString(line, ""))
 		result = append(result, line)
 	}
 	return result
