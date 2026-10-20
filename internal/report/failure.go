@@ -201,6 +201,11 @@ func cleanLines(logs string) []string {
 	for _, line := range raw {
 		line = ansiPattern.ReplaceAllString(line, "")
 		line = caretANSIPattern.ReplaceAllString(line, "")
+		if strings.TrimSpace(line) == "[logs truncated]" {
+			inCommandPreview = false
+			result = append(result, "")
+			continue
+		}
 		groupRun := strings.Contains(line, "##[group]Run ")
 		endGroup := strings.Contains(line, "##[endgroup]")
 		commandPreview := inCommandPreview || groupRun

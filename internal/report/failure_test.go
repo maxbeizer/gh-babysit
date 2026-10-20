@@ -145,6 +145,12 @@ func TestFailureExtractsOrdinaryAndAggregateFailures(t *testing.T) {
 			want:     []string{"Failure details:", "Error: Process completed with exit code 1."},
 			unwanted: []string{"##[error]"},
 		},
+		{
+			name:     "truncation resets command preview",
+			logs:     "##[group]Run build-script\necho workflow source\n[logs truncated]\n##[error]Process completed with exit code 1.",
+			want:     []string{"Failure details:", "Error: Process completed with exit code 1."},
+			unwanted: []string{"workflow source"},
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
