@@ -58,13 +58,16 @@ func Run(ctx context.Context, source Source, timer clock.Clock, options Options)
 	started, appeared, stable := timer.Now(), false, 0
 	deadline := started.Add(options.Timeout)
 	appearanceDeadline := started.Add(options.AppearanceTimeout)
-	var previousSuccess string
+	var previousSuccess, indeterminateReason string
 	for {
 		operationDeadline := deadline
 		if !appeared && appearanceDeadline.Before(operationDeadline) {
 			operationDeadline = appearanceDeadline
 		}
 		if !timer.Now().Before(operationDeadline) {
+			if !appeared && indeterminateReason != "" {
+				return Result{}, fmt.Errorf("%w: required suite could not be established after %s: %s", ErrTimeout, options.AppearanceTimeout, indeterminateReason)
+			}
 			return Result{}, deadlineError(appeared, options)
 		}
 		if err := callVoid(watchCtx, timer, operationDeadline, source.VerifyLocal); err != nil {
@@ -91,10 +94,7 @@ func Run(ctx context.Context, source Source, timer clock.Clock, options Options)
 		if err := callVoid(watchCtx, timer, operationDeadline, source.VerifyLocal); err != nil {
 			return Result{}, operationDeadlineError("verify local baseline", err, appeared, options)
 		}
-		if !snapshot.RequirementsAuthoritative {
-			return Result{}, errors.New("safety stop: required-check configuration is not authoritative")
-		}
-
+		indeterminateReason = snapshot.IndeterminateReason
 		missing, pending, failed := evaluate(snapshot)
 		if !appeared && !timer.Now().Before(appearanceDeadline) {
 			return Result{}, deadlineError(false, options)
@@ -132,7 +132,10 @@ func Run(ctx context.Context, source Source, timer clock.Clock, options Options)
 			print(options.Output, "failed %s: %s\n", observation.Context, observation.URL)
 			return result, nil
 		}
-		if len(snapshot.Requirements) == 0 || len(missing) == 0 {
+		if !snapshot.RequirementsAuthoritative && len(snapshot.Requirements) > 0 && len(missing) == 0 && len(pending) == 0 {
+			return Result{}, fmt.Errorf("safety stop: %s", snapshot.IndeterminateReason)
+		}
+		if snapshot.RequirementsAuthoritative && (len(snapshot.Requirements) == 0 || len(missing) == 0) {
 			appeared = true
 		}
 		if appeared && len(missing) == 0 && len(pending) == 0 {

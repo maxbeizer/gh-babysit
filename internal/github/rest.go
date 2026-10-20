@@ -21,8 +21,9 @@ type API interface {
 
 // HTTPStatusError preserves status semantics needed to distinguish the one safe 404.
 type HTTPStatusError struct {
-	Status int
-	Body   string
+	Status  int
+	Body    string
+	Headers map[string]string
 }
 
 func (e *HTTPStatusError) Error() string {
@@ -68,7 +69,7 @@ func (c GHAPI) Get(ctx context.Context, endpoint string) ([]json.RawMessage, err
 	if err != nil {
 		message := strings.TrimSpace(string(append(append([]byte(nil), result.Stdout...), result.Stderr...)))
 		if status, response := latestHTTPResponse(message); status != 0 {
-			httpErr := &HTTPStatusError{Status: status, Body: message}
+			httpErr := &HTTPStatusError{Status: status, Body: message, Headers: responseHeaders(response)}
 			if retry, reset, ok := rateLimitMetadata(response); ok && isRateLimited(status, response) {
 				return nil, &RateLimitError{HTTPStatusError: httpErr, RetryAfterDuration: retry, ResetAt: reset}
 			}
@@ -331,6 +332,22 @@ func latestHTTPResponse(message string) (int, string) {
 	match := matches[len(matches)-1]
 	status, _ := strconv.Atoi(message[match[2]:match[3]])
 	return status, message[match[0]:]
+}
+
+func responseHeaders(message string) map[string]string {
+	headers := make(map[string]string)
+	lines := strings.Split(message, "\n")
+	for _, line := range lines[1:] {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			break
+		}
+		name, value, ok := strings.Cut(line, ":")
+		if ok {
+			headers[strings.ToLower(strings.TrimSpace(name))] = strings.TrimSpace(value)
+		}
+	}
+	return headers
 }
 
 func rateLimitMetadata(message string) (time.Duration, time.Time, bool) {

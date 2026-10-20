@@ -136,7 +136,11 @@ A non-mutating push-access probe is not reliable on all servers. Use authenticat
 
 Required-check discovery is a blocking spike, independent of the Copilot spike. The internal provider is SHA-addressed and returns rich identities regardless of which GitHub API implementation wins.
 
-First evaluate GitHub's own required-check resolution exposed by:
+The production provider is hybrid. It prefers exact-SHA REST observations plus classic branch-protection and applicable-ruleset configuration. When, and only when, a configuration read returns the integration-token permission denial `403 Resource not accessible by integration` with `X-Accepted-GitHub-Permissions: administration=read`, it uses the PR status-check rollup's `CheckRun.isRequired(pullRequestNumber:)` and `StatusContext.isRequired(pullRequestNumber:)`. Exact-SHA REST observations remain the source of rich check identity and log/rerun metadata. Authentication failures, rate limits, and unrelated permission failures do not select the fallback.
+
+The fallback query resolves both the recorded SHA and PR head and remains inside the existing before/after PR-head bracket. `isRequired` is authoritative only for contexts present in the rollup; neither an empty nor a partially populated rollup proves that all configured checks have appeared. Completion therefore additionally requires GitHub's positive `PullRequest.mergeStateStatus=CLEAN` signal for that exact head. Pending and failing observed required checks remain actionable without that signal. If the suite is empty, or observed checks finish while merge state remains non-clean, the watcher stops safely with guidance to use a token with repository Administration read permission rather than claiming success.
+
+Also evaluate GitHub's own required-check resolution exposed by:
 
 ```text
 gh pr checks <number> --required --json bucket,completedAt,event,link,name,startedAt,state,workflow
@@ -384,7 +388,7 @@ Decisions made here:
 Must be proven before release:
 
 1. `gh pr checks --required` correctly covers active rulesets and app-qualified checks, or it must be replaced with an exact-SHA API implementation.
-2. The implementation can positively distinguish zero configured required checks from checks that have not appeared.
+2. The implementation can positively distinguish zero configured required checks from checks that have not appeared when configuration APIs are authorized; limited-token fallback must time out safely rather than infer zero from an empty rollup.
 3. Copilot diagnosis can be made technically read-only.
 4. Copilot fix mode can be prevented from committing, pushing, or rewriting history.
 5. Log-to-check/run mapping is unambiguous for required GitHub Actions checks.

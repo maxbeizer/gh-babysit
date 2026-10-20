@@ -67,12 +67,14 @@ type Snapshot struct {
 	BaseBranch                string        `json:"base_branch"`
 	SHA                       string        `json:"sha"`
 	RequirementsAuthoritative bool          `json:"requirements_authoritative"`
+	IndeterminateReason       string        `json:"indeterminate_reason,omitempty"`
 	Requirements              []Requirement `json:"requirements"`
 	Observations              []Observation `json:"observations"`
 }
 
 type Request struct {
 	Owner, Repository, BaseBranch, SHA string
+	PullRequestNumber                  int
 }
 
 // Backend separates transport from normalization and is intentionally exact-SHA
@@ -86,9 +88,25 @@ type Backend interface {
 
 var ErrNoClassicProtection = errors.New("branch has no classic protection")
 
-type Provider struct{ backend Backend }
+type PullRequestRequirementResult struct {
+	Requirements            []Requirement
+	CompletionAuthoritative bool
+}
+
+type PullRequestRequirements interface {
+	Requirements(context.Context, Request) (PullRequestRequirementResult, error)
+}
+
+type Provider struct {
+	backend  Backend
+	fallback PullRequestRequirements
+}
 
 func NewProvider(backend Backend) *Provider { return &Provider{backend: backend} }
+
+func NewHybridProvider(backend Backend, fallback PullRequestRequirements) *Provider {
+	return &Provider{backend: backend, fallback: fallback}
+}
 
 func (p *Provider) Discover(ctx context.Context, req Request) (Snapshot, error) {
 	if p == nil || p.backend == nil {
@@ -98,26 +116,69 @@ func (p *Provider) Discover(ctx context.Context, req Request) (Snapshot, error) 
 		return Snapshot{}, errors.New("owner, repository, base branch, and SHA are required")
 	}
 	classic, err := p.backend.ClassicRequirements(ctx, req)
-	if err != nil && !errors.Is(err, ErrNoClassicProtection) {
+	useFallback := isConfigurationPermissionError(err)
+	if err != nil && !errors.Is(err, ErrNoClassicProtection) && !useFallback {
 		return Snapshot{}, fmt.Errorf("read classic required checks: %w", err)
 	}
-	rules, err := p.backend.RulesetRequirements(ctx, req)
-	if err != nil {
-		return Snapshot{}, fmt.Errorf("read applicable rulesets (required to prove configuration): %w", err)
+	var rules []Requirement
+	if !useFallback {
+		rules, err = p.backend.RulesetRequirements(ctx, req)
+		useFallback = isConfigurationPermissionError(err)
+		if err != nil && !useFallback {
+			return Snapshot{}, fmt.Errorf("read applicable rulesets (required to prove configuration): %w", err)
+		}
 	}
 	observed, err := p.backend.Observations(ctx, req)
 	if err != nil {
 		return Snapshot{}, fmt.Errorf("read observations for %s: %w", req.SHA, err)
 	}
 
-	return Snapshot{
+	requirements := mergeRequirements(classic, rules)
+	authoritative := true
+	if useFallback {
+		if p.fallback == nil {
+			return Snapshot{}, errors.New("Codespaces token cannot read required-check configuration and no PR-scoped fallback is configured")
+		}
+		if req.PullRequestNumber <= 0 {
+			return Snapshot{}, errors.New("pull request number is required for PR-scoped required-check fallback")
+		}
+		fallback, fallbackErr := p.fallback.Requirements(ctx, req)
+		if fallbackErr != nil {
+			return Snapshot{}, fmt.Errorf("read PR-scoped required checks after configuration permission denial: %w", fallbackErr)
+		}
+		requirements = fallback.Requirements
+		authoritative = fallback.CompletionAuthoritative
+	}
+	snapshot := Snapshot{
 		Repository:                req.Owner + "/" + req.Repository,
 		BaseBranch:                req.BaseBranch,
 		SHA:                       req.SHA,
-		RequirementsAuthoritative: true,
-		Requirements:              mergeRequirements(classic, rules),
+		RequirementsAuthoritative: authoritative,
+		Requirements:              requirements,
 		Observations:              latestObservations(observed),
-	}, nil
+	}
+	if useFallback && !authoritative {
+		snapshot.IndeterminateReason = "Codespaces token can identify observed required checks but cannot prove the complete required-check set; use a token with repository Administration read permission"
+	}
+	return snapshot, nil
+}
+
+func isConfigurationPermissionError(err error) bool {
+	if err == nil {
+		return false
+	}
+	var limited *RateLimitError
+	if errors.As(err, &limited) {
+		return false
+	}
+	var status *HTTPStatusError
+	if !errors.As(err, &status) || status.Status != 403 {
+		return false
+	}
+	body := strings.ToLower(status.Body)
+	permissions := strings.ToLower(status.Headers["x-accepted-github-permissions"])
+	return strings.Contains(body, "resource not accessible by integration") &&
+		strings.Contains(permissions, "administration=read")
 }
 
 func identityKey(i Identity) string {
