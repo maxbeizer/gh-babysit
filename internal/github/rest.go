@@ -69,7 +69,7 @@ func (c GHAPI) Get(ctx context.Context, endpoint string) ([]json.RawMessage, err
 		message := strings.TrimSpace(string(append(append([]byte(nil), result.Stdout...), result.Stderr...)))
 		if status := statusFromGHError(message); status != 0 {
 			httpErr := &HTTPStatusError{Status: status, Body: message}
-			if retry, reset, ok := rateLimitMetadata(message); ok && (status == 403 || status == 429) {
+			if retry, reset, ok := rateLimitMetadata(message); ok && isRateLimited(status, message) {
 				return nil, &RateLimitError{HTTPStatusError: httpErr, RetryAfterDuration: retry, ResetAt: reset}
 			}
 			return nil, httpErr
@@ -308,31 +308,47 @@ var (
 	ghStatusPattern   = regexp.MustCompile(`(?i)HTTP(?:/[0-9.]+)?[ :]([0-9]{3})`)
 	retryAfterPattern = regexp.MustCompile(`(?im)retry-after:\s*([0-9]+)`)
 	rateResetPattern  = regexp.MustCompile(`(?im)x-ratelimit-reset:\s*([0-9]+)`)
+	rateRemainPattern = regexp.MustCompile(`(?im)x-ratelimit-remaining:\s*([0-9]+)`)
 )
 
 func statusFromGHError(message string) int {
-	match := ghStatusPattern.FindStringSubmatch(message)
-	if len(match) != 2 {
+	matches := ghStatusPattern.FindAllStringSubmatch(message, -1)
+	if len(matches) == 0 {
 		return 0
 	}
-	status, _ := strconv.Atoi(match[1])
+	status, _ := strconv.Atoi(matches[len(matches)-1][1])
 	return status
 }
 
 func rateLimitMetadata(message string) (time.Duration, time.Time, bool) {
-	if match := retryAfterPattern.FindStringSubmatch(message); len(match) == 2 {
-		seconds, err := strconv.ParseInt(match[1], 10, 64)
+	if matches := retryAfterPattern.FindAllStringSubmatch(message, -1); len(matches) > 0 {
+		seconds, err := strconv.ParseInt(matches[len(matches)-1][1], 10, 64)
 		if err == nil {
 			return time.Duration(seconds) * time.Second, time.Time{}, true
 		}
 	}
-	if match := rateResetPattern.FindStringSubmatch(message); len(match) == 2 {
-		seconds, err := strconv.ParseInt(match[1], 10, 64)
+	if matches := rateResetPattern.FindAllStringSubmatch(message, -1); len(matches) > 0 {
+		seconds, err := strconv.ParseInt(matches[len(matches)-1][1], 10, 64)
 		if err == nil {
 			return 0, time.Unix(seconds, 0), true
 		}
 	}
 	return 0, time.Time{}, false
+}
+
+func isRateLimited(status int, message string) bool {
+	if status == 429 {
+		return true
+	}
+	if status != 403 {
+		return false
+	}
+	remaining := rateRemainPattern.FindAllStringSubmatch(message, -1)
+	if len(remaining) > 0 && remaining[len(remaining)-1][1] == "0" {
+		return true
+	}
+	lower := strings.ToLower(message)
+	return strings.Contains(lower, "rate limit") || strings.Contains(lower, "secondary rate") || strings.Contains(lower, "abuse detection")
 }
 
 func workflowRunFromURL(value string) *int64 {

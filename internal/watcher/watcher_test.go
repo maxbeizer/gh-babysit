@@ -119,6 +119,26 @@ func TestRunRequiresTheSameSuccessfulSetTwice(t *testing.T) {
 	}
 }
 
+func TestEvaluateAppliesUnqualifiedRequirementsToAllMatchingObservations(t *testing.T) {
+	appID := int64(15368)
+	requirement := req("build")
+	passingStatus := obs("build", gh.StateSuccess)
+	failingCheck := obs("build", gh.StateFailure)
+	failingCheck.AppID = &appID
+	missing, pending, failed := evaluate(snapshot([]gh.Requirement{requirement}, passingStatus, failingCheck))
+	if len(missing) != 0 || len(pending) != 0 || len(failed) != 1 || failed[0].AppID == nil {
+		t.Fatalf("missing=%v pending=%v failed=%v", missing, pending, failed)
+	}
+
+	requirement.AppID = &appID
+	otherApp := int64(99)
+	passingStatus.AppID = &otherApp
+	missing, _, failed = evaluate(snapshot([]gh.Requirement{requirement}, passingStatus))
+	if len(missing) != 1 || len(failed) != 0 {
+		t.Fatalf("app-qualified result missing=%v failed=%v", missing, failed)
+	}
+}
+
 func TestRunReportsOptionalFailureWithoutGatingSuccess(t *testing.T) {
 	s := snapshot([]gh.Requirement{req("build")}, obs("build", gh.StateSuccess), obs("lint", gh.StateFailure))
 	source := &fakeSource{snapshots: []gh.Snapshot{s, s}}
@@ -313,10 +333,14 @@ func TestRunFailsSafeOnHeadChangeAndTimeouts(t *testing.T) {
 		}
 	})
 	t.Run("appearance", func(t *testing.T) {
-		source := &fakeSource{snapshots: []gh.Snapshot{snapshot([]gh.Requirement{req("build")}), snapshot([]gh.Requirement{req("build")})}}
-		_, err := Run(context.Background(), source, &fakeClock{}, Options{RecordedSHA: "sha", PollInterval: time.Second, AppearanceTimeout: time.Second, Timeout: time.Hour})
-		if !errors.Is(err, ErrTimeout) {
-			t.Fatalf("error=%v", err)
+		source := &fakeSource{snapshots: []gh.Snapshot{
+			snapshot([]gh.Requirement{req("build")}),
+			snapshot([]gh.Requirement{req("build")}, obs("build", gh.StateSuccess)),
+		}}
+		clock := &fakeClock{}
+		_, err := Run(context.Background(), source, clock, Options{RecordedSHA: "sha", PollInterval: 15 * time.Second, AppearanceTimeout: time.Second, Timeout: time.Hour})
+		if !errors.Is(err, ErrTimeout) || source.calls != 1 || clock.now.Sub(time.Time{}) != time.Second {
+			t.Fatalf("error=%v calls=%d now=%s", err, source.calls, clock.now)
 		}
 	})
 }

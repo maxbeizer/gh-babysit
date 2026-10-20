@@ -46,6 +46,9 @@ func (s *WatchSource) VerifyLocal(ctx context.Context) error {
 	for _, check := range checks {
 		result, err := s.Runner.Run(ctx, process.Request{Name: "git", Dir: s.Root, Args: check.args})
 		if err != nil {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
 			return fmt.Errorf("verify local %s: %w", check.name, err)
 		}
 		if !bytes.Equal(result.Stdout, check.want) {
@@ -56,15 +59,22 @@ func (s *WatchSource) VerifyLocal(ctx context.Context) error {
 }
 
 func (s *WatchSource) HeadSHA(ctx context.Context) (string, error) {
-	result, err := s.Runner.Run(ctx, process.Request{Name: "gh", Dir: s.Root, Args: []string{"pr", "view", strconv.Itoa(s.PR.Number), "--repo", s.PR.Repository, "--json", "headRefOid"}})
+	result, err := s.Runner.Run(ctx, process.Request{Name: "gh", Dir: s.Root, Args: []string{"pr", "view", strconv.Itoa(s.PR.Number), "--repo", s.qualifiedRepository(), "--json", "headRefOid,baseRefName"}})
 	if err != nil {
+		if ctx.Err() != nil {
+			return "", ctx.Err()
+		}
 		return "", watchCommandError("gh pr view", result, err)
 	}
 	var response struct {
-		HeadRefOID string `json:"headRefOid"`
+		HeadRefOID  string `json:"headRefOid"`
+		BaseRefName string `json:"baseRefName"`
 	}
-	if err := json.Unmarshal(result.Stdout, &response); err != nil || response.HeadRefOID == "" {
-		return "", errors.New("gh pr view omitted headRefOid")
+	if err := json.Unmarshal(result.Stdout, &response); err != nil || response.HeadRefOID == "" || response.BaseRefName == "" {
+		return "", errors.New("gh pr view omitted headRefOid or baseRefName")
+	}
+	if response.BaseRefName != s.PR.BaseBranch {
+		return "", fmt.Errorf("safety stop: PR base changed from %s to %s", s.PR.BaseBranch, response.BaseRefName)
 	}
 	return response.HeadRefOID, nil
 }
@@ -78,8 +88,11 @@ func (s *WatchSource) FailedLogs(ctx context.Context, observation Observation, l
 	if observation.WorkflowRunID == nil {
 		return "", errors.New("failed check is not unambiguously mapped to a GitHub Actions run")
 	}
-	result, err := s.Runner.Run(ctx, process.Request{Name: "gh", Dir: s.Root, Args: []string{"run", "view", strconv.FormatInt(*observation.WorkflowRunID, 10), "--repo", s.PR.Repository, "--log-failed"}, StdoutLimit: limit, StderrLimit: 8 << 10})
+	result, err := s.Runner.Run(ctx, process.Request{Name: "gh", Dir: s.Root, Args: []string{"run", "view", strconv.FormatInt(*observation.WorkflowRunID, 10), "--repo", s.qualifiedRepository(), "--log-failed"}, StdoutLimit: limit, StderrLimit: 8 << 10})
 	if err != nil {
+		if ctx.Err() != nil {
+			return "", ctx.Err()
+		}
 		return "", watchCommandError("gh run view", result, err)
 	}
 	if len(result.Stdout) == 0 {
@@ -93,11 +106,21 @@ func (s *WatchSource) FailedLogs(ctx context.Context, observation Observation, l
 	return logs, nil
 }
 
+func (s *WatchSource) qualifiedRepository() string {
+	if s.PR.Host == "" {
+		return s.PR.Repository
+	}
+	return s.PR.Host + "/" + s.PR.Repository
+}
+
 func watchCommandError(operation string, result process.Result, err error) error {
 	message := strings.TrimSpace(string(result.Stderr))
 	status := statusFromGHError(message)
-	if retry, reset, ok := rateLimitMetadata(message); ok && (status == 403 || status == 429) {
+	if retry, reset, ok := rateLimitMetadata(message); ok && isRateLimited(status, message) {
 		return &RateLimitError{HTTPStatusError: &HTTPStatusError{Status: status, Body: message}, RetryAfterDuration: retry, ResetAt: reset}
+	}
+	if status != 0 {
+		return fmt.Errorf("%s: %w", operation, &HTTPStatusError{Status: status, Body: message})
 	}
 	return fmt.Errorf("%s: %w: %s", operation, err, message)
 }

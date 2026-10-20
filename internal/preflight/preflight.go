@@ -79,7 +79,7 @@ func (c Checker) Run(ctx context.Context, argument string) (Result, error) {
 	if err != nil {
 		return Result{}, safety(UnsafeRemote, 0, "", "configure an origin remote for this repository", err)
 	}
-	host, _, err := repositoryFromRemote(strings.TrimSpace(string(remoteURL)))
+	host, remoteRepository, err := repositoryFromRemote(strings.TrimSpace(string(remoteURL)))
 	if err != nil {
 		return Result{}, safety(UnsafeRemote, 0, "", "configure origin with an SSH or HTTPS GitHub URL", err)
 	}
@@ -95,7 +95,7 @@ func (c Checker) Run(ctx context.Context, argument string) (Result, error) {
 		return Result{}, safety(DirtyWorktree, 0, "", "commit, stash, or remove these changes: "+DirtySummary(status, 8), nil)
 	}
 
-	repoOut, err := c.run(ctx, root, "gh", "repo", "view", "--json", "nameWithOwner,url,viewerPermission")
+	repoOut, err := c.run(ctx, root, "gh", "repo", "view", host+"/"+remoteRepository, "--json", "nameWithOwner,url,viewerPermission")
 	if err != nil {
 		return Result{}, usage(PRResolution, "ensure this checkout has a GitHub repository and retry", err)
 	}
@@ -111,7 +111,7 @@ func (c Checker) Run(ctx context.Context, argument string) (Result, error) {
 	if argument != "" {
 		prArgs = append(prArgs, argument)
 	}
-	prArgs = append(prArgs, "--json", "number,url,baseRefName,headRefName,headRefOid,headRepository,headRepositoryOwner,isCrossRepository")
+	prArgs = append(prArgs, "--repo", host+"/"+remoteRepository, "--json", "number,url,baseRefName,headRefName,headRefOid,headRepository,headRepositoryOwner,isCrossRepository")
 	prOut, err := c.run(ctx, root, "gh", prArgs...)
 	if err != nil {
 		return Result{}, usage(PRResolution, "pass an existing PR number or URL, or check out its branch", err)

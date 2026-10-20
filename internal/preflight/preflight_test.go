@@ -33,12 +33,12 @@ func key(name string, args ...string) string { return name + " " + strings.Join(
 
 func goodResponses() map[string]response {
 	return map[string]response{
-		key("git", "rev-parse", "--show-toplevel"):                                {out: "/repo\n"},
-		key("git", "remote", "get-url", "origin"):                                 {out: "git@github.com:acme/widgets.git\n"},
-		key("gh", "auth", "status", "--hostname", "github.com"):                   {},
-		key("git", "status", "--porcelain=v1", "-z", "--untracked-files=all"):     {},
-		key("gh", "repo", "view", "--json", "nameWithOwner,url,viewerPermission"): {out: `{"nameWithOwner":"acme/widgets","url":"https://github.com/acme/widgets","viewerPermission":"WRITE"}`},
-		key("gh", "pr", "view", "12", "--json", "number,url,baseRefName,headRefName,headRefOid,headRepository,headRepositoryOwner,isCrossRepository"): {out: `{"number":12,"url":"https://github.com/acme/widgets/pull/12","baseRefName":"main","headRefName":"topic","headRefOid":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","headRepository":{"name":"widgets"},"headRepositoryOwner":{"login":"acme"},"isCrossRepository":false}`},
+		key("git", "rev-parse", "--show-toplevel"):                                                           {out: "/repo\n"},
+		key("git", "remote", "get-url", "origin"):                                                            {out: "git@github.com:acme/widgets.git\n"},
+		key("gh", "auth", "status", "--hostname", "github.com"):                                              {},
+		key("git", "status", "--porcelain=v1", "-z", "--untracked-files=all"):                                {},
+		key("gh", "repo", "view", "github.com/acme/widgets", "--json", "nameWithOwner,url,viewerPermission"): {out: `{"nameWithOwner":"acme/widgets","url":"https://github.com/acme/widgets","viewerPermission":"WRITE"}`},
+		key("gh", "pr", "view", "12", "--repo", "github.com/acme/widgets", "--json", "number,url,baseRefName,headRefName,headRefOid,headRepository,headRepositoryOwner,isCrossRepository"): {out: `{"number":12,"url":"https://github.com/acme/widgets/pull/12","baseRefName":"main","headRefName":"topic","headRefOid":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","headRepository":{"name":"widgets"},"headRepositoryOwner":{"login":"acme"},"isCrossRepository":false}`},
 		key("git", "symbolic-ref", "--quiet", "--short", "HEAD"):                   {out: "topic\n"},
 		key("git", "rev-parse", "HEAD"):                                            {out: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n"},
 		key("git", "config", "--get", "branch.topic.pushRemote"):                   {err: errors.New("unset")},
@@ -66,8 +66,8 @@ func TestRunRecordsVerifiedBaseline(t *testing.T) {
 
 func TestCurrentBranchResolutionOmitsArgument(t *testing.T) {
 	rs := goodResponses()
-	explicit := key("gh", "pr", "view", "12", "--json", "number,url,baseRefName,headRefName,headRefOid,headRepository,headRepositoryOwner,isCrossRepository")
-	current := key("gh", "pr", "view", "--json", "number,url,baseRefName,headRefName,headRefOid,headRepository,headRepositoryOwner,isCrossRepository")
+	explicit := key("gh", "pr", "view", "12", "--repo", "github.com/acme/widgets", "--json", "number,url,baseRefName,headRefName,headRefOid,headRepository,headRepositoryOwner,isCrossRepository")
+	current := key("gh", "pr", "view", "--repo", "github.com/acme/widgets", "--json", "number,url,baseRefName,headRefName,headRefOid,headRepository,headRepositoryOwner,isCrossRepository")
 	rs[current] = rs[explicit]
 	delete(rs, explicit)
 	if _, err := (Checker{Runner: &fakeRunner{responses: rs}}).Run(context.Background(), ""); err != nil {
@@ -82,13 +82,13 @@ func TestSafetyRejectionsAreTypedAndActionable(t *testing.T) {
 		kind          Kind
 	}{
 		{"dirty", key("git", "status", "--porcelain=v1", "-z", "--untracked-files=all"), response{out: " M README.md\x00?? new.txt\x00"}, DirtyWorktree},
-		{"wrong PR repository", key("gh", "pr", "view", "12", "--json", "number,url,baseRefName,headRefName,headRefOid,headRepository,headRepositoryOwner,isCrossRepository"), response{out: `{"number":12,"url":"https://github.com/other/widgets/pull/12","baseRefName":"main","headRefName":"topic","headRefOid":"abc","headRepository":{"name":"widgets"},"headRepositoryOwner":{"login":"other"}}`}, StateMismatch},
-		{"fork", key("gh", "pr", "view", "12", "--json", "number,url,baseRefName,headRefName,headRefOid,headRepository,headRepositoryOwner,isCrossRepository"), response{out: `{"number":12,"url":"https://github.com/acme/widgets/pull/12","baseRefName":"main","headRefName":"topic","headRefOid":"abc","headRepository":{"name":"widgets"},"headRepositoryOwner":{"login":"other"},"isCrossRepository":true}`}, ForkPullRequest},
+		{"wrong PR repository", key("gh", "pr", "view", "12", "--repo", "github.com/acme/widgets", "--json", "number,url,baseRefName,headRefName,headRefOid,headRepository,headRepositoryOwner,isCrossRepository"), response{out: `{"number":12,"url":"https://github.com/other/widgets/pull/12","baseRefName":"main","headRefName":"topic","headRefOid":"abc","headRepository":{"name":"widgets"},"headRepositoryOwner":{"login":"other"}}`}, StateMismatch},
+		{"fork", key("gh", "pr", "view", "12", "--repo", "github.com/acme/widgets", "--json", "number,url,baseRefName,headRefName,headRefOid,headRepository,headRepositoryOwner,isCrossRepository"), response{out: `{"number":12,"url":"https://github.com/acme/widgets/pull/12","baseRefName":"main","headRefName":"topic","headRefOid":"abc","headRepository":{"name":"widgets"},"headRepositoryOwner":{"login":"other"},"isCrossRepository":true}`}, ForkPullRequest},
 		{"detached", key("git", "symbolic-ref", "--quiet", "--short", "HEAD"), response{err: errors.New("detached")}, DetachedHead},
 		{"head mismatch", key("git", "rev-parse", "HEAD"), response{out: "bbbb\n"}, StateMismatch},
 		{"wrong push branch", key("git", "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{push}"), response{out: "origin/other\n"}, UnsafeRemote},
 		{"wrong push remote", key("git", "remote", "get-url", "--push", "origin"), response{out: "git@github.com:acme/other.git\n"}, UnsafeRemote},
-		{"permission", key("gh", "repo", "view", "--json", "nameWithOwner,url,viewerPermission"), response{out: `{"nameWithOwner":"acme/widgets","viewerPermission":"READ"}`}, PermissionDenied},
+		{"permission", key("gh", "repo", "view", "github.com/acme/widgets", "--json", "nameWithOwner,url,viewerPermission"), response{out: `{"nameWithOwner":"acme/widgets","viewerPermission":"READ"}`}, PermissionDenied},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

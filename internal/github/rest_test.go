@@ -74,6 +74,31 @@ func TestGHAPIPreservesRateLimitMetadata(t *testing.T) {
 	}
 }
 
+func TestGHAPIUsesLatestPaginatedFailureMetadata(t *testing.T) {
+	client := GHAPI{Runner: runnerFunc(func(context.Context, process.Request) (process.Result, error) {
+		stdout := "HTTP/2.0 200 OK\r\nX-RateLimit-Remaining: 10\r\nX-RateLimit-Reset: 1\r\n\r\n[]\n" +
+			"HTTP/2.0 429 Too Many Requests\r\nRetry-After: 9\r\n\r\n{}\n"
+		return process.Result{Stdout: []byte(stdout)}, errors.New("exit status 1")
+	})}
+	_, err := client.Get(context.Background(), "endpoint")
+	var limited *RateLimitError
+	if !errors.As(err, &limited) || limited.Status != 429 || limited.RetryAfter(time.Time{}) != 9*time.Second {
+		t.Fatalf("error=%v", err)
+	}
+}
+
+func TestGHAPIDoesNotRetryPermission403WithResetHeader(t *testing.T) {
+	client := GHAPI{Runner: runnerFunc(func(context.Context, process.Request) (process.Result, error) {
+		return process.Result{Stdout: []byte("HTTP/2.0 403 Forbidden\r\nX-RateLimit-Remaining: 42\r\nX-RateLimit-Reset: 99\r\n\r\n{}\n")}, errors.New("exit status 1")
+	})}
+	_, err := client.Get(context.Background(), "endpoint")
+	var limited *RateLimitError
+	var status *HTTPStatusError
+	if errors.As(err, &limited) || !errors.As(err, &status) || status.Status != 403 {
+		t.Fatalf("error=%v", err)
+	}
+}
+
 func TestGHAPIPreservesHTTPStatus(t *testing.T) {
 	client := GHAPI{Runner: runnerFunc(func(context.Context, process.Request) (process.Result, error) {
 		return process.Result{Stderr: []byte("gh: Branch not protected (HTTP 404)\n")}, errors.New("exit status 1")

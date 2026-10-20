@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"os/exec"
 	"strconv"
 	"strings"
 	"time"
@@ -48,6 +49,13 @@ func NewCommand(version string) *cobra.Command {
 	return NewCommandWithRunner(version, process.ExecRunner{})
 }
 
+func qualifiedRepository(host, repository string) string {
+	if host == "" {
+		return repository
+	}
+	return host + "/" + repository
+}
+
 func NewCommandWithRunner(version string, runner process.Runner) *cobra.Command {
 	o := Options{}
 	cmd := &cobra.Command{
@@ -72,7 +80,7 @@ func NewCommandWithRunner(version string, runner process.Runner) *cobra.Command 
 			if err != nil {
 				return exitcode.New(exitcode.Usage, err)
 			}
-			watchResult, err := watcher.Run(cmd.Context(), source, clock.Real{}, watcher.Options{RecordedSHA: result.Baseline.HeadSHA, Repository: result.PullRequest.Repository, PollInterval: o.PollInterval, AppearanceTimeout: o.AppearanceTimeout, Timeout: o.Timeout, Output: cmd.OutOrStdout()})
+			watchResult, err := watcher.Run(cmd.Context(), source, clock.Real{}, watcher.Options{RecordedSHA: result.Baseline.HeadSHA, Repository: qualifiedRepository(result.PullRequest.Host, result.PullRequest.Repository), PollInterval: o.PollInterval, AppearanceTimeout: o.AppearanceTimeout, Timeout: o.Timeout, Output: cmd.OutOrStdout()})
 			if err != nil {
 				if cause := context.Cause(cmd.Context()); cause != nil {
 					return cause
@@ -80,7 +88,7 @@ func NewCommandWithRunner(version string, runner process.Runner) *cobra.Command 
 				if errors.Is(err, watcher.ErrTimeout) {
 					return exitcode.New(exitcode.Timeout, err)
 				}
-				if gh.IsAuthenticationError(err) {
+				if gh.IsAuthenticationError(err) || errors.Is(err, exec.ErrNotFound) {
 					return exitcode.New(exitcode.Usage, err)
 				}
 				return exitcode.New(exitcode.SafetyStop, err)

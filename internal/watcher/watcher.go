@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os/exec"
 	"slices"
 	"strings"
 	"time"
@@ -56,40 +57,48 @@ func Run(ctx context.Context, source Source, timer clock.Clock, options Options)
 	defer cancel()
 	started, appeared, stable := timer.Now(), false, 0
 	deadline := started.Add(options.Timeout)
+	appearanceDeadline := started.Add(options.AppearanceTimeout)
 	var previousSuccess string
 	for {
-		if !timer.Now().Before(deadline) {
-			return Result{}, timeoutError(options.Timeout)
+		operationDeadline := deadline
+		if !appeared && appearanceDeadline.Before(operationDeadline) {
+			operationDeadline = appearanceDeadline
 		}
-		if err := source.VerifyLocal(watchCtx); err != nil {
-			return Result{}, operationError("verify local baseline", err, options.Timeout)
+		if !timer.Now().Before(operationDeadline) {
+			return Result{}, deadlineError(appeared, options)
 		}
-		before, err := call(watchCtx, timer, deadline, source.HeadSHA)
+		if err := callVoid(watchCtx, timer, operationDeadline, source.VerifyLocal); err != nil {
+			return Result{}, operationDeadlineError("verify local baseline", err, appeared, options)
+		}
+		before, err := call(watchCtx, timer, operationDeadline, source.HeadSHA)
 		if err != nil {
-			return Result{}, operationError("read PR head before snapshot", err, options.Timeout)
+			return Result{}, operationDeadlineError("read PR head before snapshot", err, appeared, options)
 		}
 		if before != options.RecordedSHA {
 			return Result{}, fmt.Errorf("safety stop: PR head changed from %s to %s", options.RecordedSHA, before)
 		}
-		snapshot, err := call(watchCtx, timer, deadline, source.Snapshot)
+		snapshot, err := call(watchCtx, timer, operationDeadline, source.Snapshot)
 		if err != nil {
-			return Result{}, operationError("discover required checks", err, options.Timeout)
+			return Result{}, operationDeadlineError("discover required checks", err, appeared, options)
 		}
-		after, err := call(watchCtx, timer, deadline, source.HeadSHA)
+		after, err := call(watchCtx, timer, operationDeadline, source.HeadSHA)
 		if err != nil {
-			return Result{}, operationError("read PR head after snapshot", err, options.Timeout)
+			return Result{}, operationDeadlineError("read PR head after snapshot", err, appeared, options)
 		}
 		if after != before || snapshot.SHA != options.RecordedSHA {
 			return Result{}, fmt.Errorf("safety stop: PR head changed while reading checks")
 		}
-		if err := source.VerifyLocal(watchCtx); err != nil {
-			return Result{}, operationError("verify local baseline", err, options.Timeout)
+		if err := callVoid(watchCtx, timer, operationDeadline, source.VerifyLocal); err != nil {
+			return Result{}, operationDeadlineError("verify local baseline", err, appeared, options)
 		}
 		if !snapshot.RequirementsAuthoritative {
 			return Result{}, errors.New("safety stop: required-check configuration is not authoritative")
 		}
 
 		missing, pending, failed := evaluate(snapshot)
+		if !appeared && !timer.Now().Before(appearanceDeadline) {
+			return Result{}, deadlineError(false, options)
+		}
 		if len(failed) > 0 {
 			observation := failed[0]
 			logs, logErr := call(watchCtx, timer, deadline, func(ctx context.Context) (string, error) {
@@ -97,6 +106,9 @@ func Run(ctx context.Context, source Source, timer clock.Clock, options Options)
 			})
 			result := Result{State: Failed, Snapshot: snapshot, Failed: observation}
 			if logErr != nil {
+				if errors.Is(logErr, context.Canceled) || gh.IsAuthenticationError(logErr) || errors.Is(logErr, exec.ErrNotFound) {
+					return Result{}, logErr
+				}
 				if errors.Is(logErr, context.DeadlineExceeded) || errors.Is(logErr, ErrTimeout) {
 					return Result{}, timeoutError(options.Timeout)
 				}
@@ -143,11 +155,17 @@ func Run(ctx context.Context, source Source, timer clock.Clock, options Options)
 			}
 			print(options.Output, "%s: missing=%d pending=%d\n", state, len(missing), len(pending))
 		}
-		if !appeared && timer.Now().Sub(started) >= options.AppearanceTimeout {
-			return Result{}, fmt.Errorf("%w: required suite did not appear after %s", ErrTimeout, options.AppearanceTimeout)
+		operationDeadline = deadline
+		if !appeared && appearanceDeadline.Before(operationDeadline) {
+			operationDeadline = appearanceDeadline
 		}
-		if err := timer.Sleep(watchCtx, options.PollInterval); err != nil {
-			return Result{}, operationError("wait for next poll", err, options.Timeout)
+		remaining := operationDeadline.Sub(timer.Now())
+		if remaining <= 0 {
+			return Result{}, deadlineError(appeared, options)
+		}
+		sleep := min(options.PollInterval, remaining)
+		if err := timer.Sleep(watchCtx, sleep); err != nil {
+			return Result{}, operationDeadlineError("wait for next poll", err, appeared, options)
 		}
 	}
 }
@@ -158,7 +176,17 @@ type retryableRateLimit interface {
 
 func call[T any](ctx context.Context, timer clock.Clock, deadline time.Time, operation func(context.Context) (T, error)) (T, error) {
 	for {
-		value, err := operation(ctx)
+		remaining := deadline.Sub(timer.Now())
+		if remaining <= 0 {
+			var zero T
+			return zero, ErrTimeout
+		}
+		operationCtx, cancel := context.WithTimeout(ctx, remaining)
+		value, err := operation(operationCtx)
+		cancel()
+		if err == nil && !timer.Now().Before(deadline) {
+			return value, ErrTimeout
+		}
 		if err == nil {
 			return value, nil
 		}
@@ -182,6 +210,27 @@ func call[T any](ctx context.Context, timer clock.Clock, deadline time.Time, ope
 	}
 }
 
+func callVoid(ctx context.Context, timer clock.Clock, deadline time.Time, operation func(context.Context) error) error {
+	_, err := call(ctx, timer, deadline, func(ctx context.Context) (struct{}, error) {
+		return struct{}{}, operation(ctx)
+	})
+	return err
+}
+
+func deadlineError(appeared bool, options Options) error {
+	if !appeared {
+		return fmt.Errorf("%w: required suite did not appear after %s", ErrTimeout, options.AppearanceTimeout)
+	}
+	return timeoutError(options.Timeout)
+}
+
+func operationDeadlineError(operation string, err error, appeared bool, options Options) error {
+	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, ErrTimeout) {
+		return deadlineError(appeared, options)
+	}
+	return fmt.Errorf("%s: %w", operation, err)
+}
+
 func operationError(operation string, err error, timeout time.Duration) error {
 	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, ErrTimeout) {
 		return timeoutError(timeout)
@@ -195,34 +244,39 @@ func timeoutError(timeout time.Duration) error {
 
 func evaluate(snapshot gh.Snapshot) (missing []gh.Requirement, pending, failed []gh.Observation) {
 	for _, requirement := range snapshot.Requirements {
-		var found *gh.Observation
-		for i := range snapshot.Observations {
-			if sameIdentity(requirement.Identity, snapshot.Observations[i].Identity) {
-				found = &snapshot.Observations[i]
-				break
+		var applicable []gh.Observation
+		for _, observation := range snapshot.Observations {
+			if satisfies(requirement.Identity, observation.Identity) {
+				applicable = append(applicable, observation)
 			}
 		}
-		if found == nil {
+		if len(applicable) == 0 {
 			missing = append(missing, requirement)
 			continue
 		}
-		switch found.State {
-		case gh.StateSuccess, gh.StateNeutral, gh.StateSkipped:
-		default:
-			if found.State == gh.StatePending {
-				pending = append(pending, *found)
-			} else {
-				failed = append(failed, *found)
+		var requirementFailed bool
+		for _, observation := range applicable {
+			if observation.State != gh.StateSuccess && observation.State != gh.StateNeutral && observation.State != gh.StateSkipped && observation.State != gh.StatePending {
+				failed = append(failed, observation)
+				requirementFailed = true
+			}
+		}
+		if requirementFailed {
+			continue
+		}
+		for _, observation := range applicable {
+			if observation.State == gh.StatePending {
+				pending = append(pending, observation)
 			}
 		}
 	}
 	return
 }
-func sameIdentity(a, b gh.Identity) bool {
-	if !strings.EqualFold(a.Context, b.Context) || (a.AppID == nil) != (b.AppID == nil) {
+func satisfies(requirement, observation gh.Identity) bool {
+	if !strings.EqualFold(requirement.Context, observation.Context) {
 		return false
 	}
-	return a.AppID == nil || *a.AppID == *b.AppID
+	return requirement.AppID == nil || (observation.AppID != nil && *requirement.AppID == *observation.AppID)
 }
 func successfulSet(snapshot gh.Snapshot) string {
 	identities := make([]string, 0, len(snapshot.Requirements))
@@ -241,7 +295,7 @@ func reportOptional(out io.Writer, snapshot gh.Snapshot) {
 	for _, observation := range snapshot.Observations {
 		required := false
 		for _, requirement := range snapshot.Requirements {
-			if sameIdentity(requirement.Identity, observation.Identity) {
+			if satisfies(requirement.Identity, observation.Identity) {
 				required = true
 				break
 			}
