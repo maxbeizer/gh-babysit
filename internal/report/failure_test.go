@@ -43,6 +43,78 @@ func TestFailureSummarizesActionsLogs(t *testing.T) {
 	}
 }
 
+func TestFailureSummarizesRealAggregateLogShape(t *testing.T) {
+	runID := int64(39332730470)
+	tests := []struct {
+		name     string
+		ansi     string
+		unwanted string
+	}{
+		{name: "caret-rendered ANSI", ansi: `^[[36;1m`, unwanted: `^[[`},
+		{name: "escape-byte ANSI", ansi: "\x1b[36;1m", unwanted: "\x1b["},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			logs := strings.ReplaceAll(strings.Join([]string{
+				"golden-jobs-results\tUNKNOWN STEP\t2026-02-02T18:05:01.000Z ##[group]Run echo \"time_in_ms=$(date +%s%3N)\" >> $GITHUB_OUTPUT",
+				`golden-jobs-results\tUNKNOWN STEP\t2026-02-02T18:05:01.100Z echo "Recommendation: run bin/ci-summary from workflow source"`,
+				"golden-jobs-results\tUNKNOWN STEP\t2026-02-02T18:05:01.200Z ##[endgroup]",
+				"golden-jobs-results\tUNKNOWN STEP\t2026-02-02T18:05:02.000Z ##[group]Run github/internal-actions@main",
+				"golden-jobs-results\tUNKNOWN STEP\t2026-02-02T18:05:02.100Z ##[endgroup]",
+				"golden-jobs-results\tUNKNOWN STEP\t2026-02-02T18:05:03.000Z ##[group]Run RUNNER_WORK_DIR=\"...\"",
+				"golden-jobs-results\tUNKNOWN STEP\t2026-02-02T18:05:03.100Z ##[endgroup]",
+				"golden-jobs-results\tUNKNOWN STEP\t2026-02-02T18:05:04.000Z " + tt.ansi + `if [[ -n "$failed_jobs" ]]; then` + "\x1b[0m",
+				`golden-jobs-results\tUNKNOWN STEP\t2026-02-02T18:05:05.000Z   failed_jobs="$(jq -r '.jobs[] | select(.conclusion == "failure")')"`,
+				`golden-jobs-results\tUNKNOWN STEP\t2026-02-02T18:05:06.000Z ##[error]golden-jobs (...) / github-reposd-multitenant failed child (https://github.com/github/github/actions/runs/39332730470/job/118334691274)`,
+				`golden-jobs-results\tUNKNOWN STEP\t2026-02-02T18:05:07.000Z ##[error]golden-jobs (...) / github-reposd failed child (https://github.com/github/github/actions/runs/39332730470/job/118334691128)`,
+				`golden-jobs-results\tUNKNOWN STEP\t2026-02-02T18:05:08.000Z {"name":"github-reposd","conclusion":"failure"},`,
+				`golden-jobs-results\tUNKNOWN STEP\t2026-02-02T18:05:09.000Z Recommended: inspect the workflow run`,
+				`golden-jobs-results\tUNKNOWN STEP\t2026-02-02T18:05:10.000Z Next step: inspect the aggregate output`,
+				`golden-jobs-results\tUNKNOWN STEP\t2026-02-02T18:05:11.000Z You should contact the workflow owner`,
+				`golden-jobs-results\tUNKNOWN STEP\t2026-02-02T18:05:12.000Z Run bin/ci-summary for failure details`,
+			}, "\n"), `\t`, "\t")
+			var out bytes.Buffer
+			Failure(&out, FailureOptions{
+				Check: gh.Observation{
+					Identity:      gh.Identity{Context: "golden-jobs-results"},
+					URL:           "https://github.com/github/github/actions/runs/39332730470/job/118343050137",
+					WorkflowRunID: &runID,
+				},
+				Repository: "github/github",
+				Logs:       logs,
+			})
+			got := out.String()
+			for _, want := range []string{
+				"Required check failed: golden-jobs-results",
+				"- github-reposd-multitenant\n    https://github.com/github/github/actions/runs/39332730470/job/118334691274",
+				"- github-reposd\n    https://github.com/github/github/actions/runs/39332730470/job/118334691128",
+				"Suggested next step:\n  Run bin/ci-summary for failure details",
+				"gh run view 39332730470 --log-failed --repo github/github",
+			} {
+				if !strings.Contains(got, want) {
+					t.Errorf("output missing %q:\n%s", want, got)
+				}
+			}
+			for _, unwanted := range []string{
+				"##[group]", "##[error]", "##[]", "UNKNOWN STEP", tt.unwanted,
+				"time_in_ms", "github/internal-actions@main", "RUNNER_WORK_DIR", "workflow source", "failed_jobs", `"conclusion":"failure"`,
+			} {
+				if strings.Contains(got, unwanted) {
+					t.Errorf("output contains %q:\n%s", unwanted, got)
+				}
+			}
+			for _, childURL := range []string{
+				"https://github.com/github/github/actions/runs/39332730470/job/118334691274",
+				"https://github.com/github/github/actions/runs/39332730470/job/118334691128",
+			} {
+				if strings.Count(got, childURL) != 1 {
+					t.Errorf("child URL should appear once: %s\n%s", childURL, got)
+				}
+			}
+		})
+	}
+}
+
 func TestFailureExtractsOrdinaryAndAggregateFailures(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -62,6 +134,23 @@ func TestFailureExtractsOrdinaryAndAggregateFailures(t *testing.T) {
 			want:     []string{"Failed jobs:", "- child-job", "actions/runs/1/job/10"},
 			unwanted: []string{"UNKNOWN STEP", "2025-01-02", "\x1b[31m"},
 		},
+		{
+			name: "structured JSON error remains visible",
+			logs: `{"level":"error","message":"database connection refused"}`,
+			want: []string{"Failure details:", `{"level":"error","message":"database connection refused"}`},
+		},
+		{
+			name:     "error annotation supplies failure signal",
+			logs:     "##[error]Process completed with exit code 1.",
+			want:     []string{"Failure details:", "Error: Process completed with exit code 1."},
+			unwanted: []string{"##[error]"},
+		},
+		{
+			name:     "truncation resets command preview",
+			logs:     "##[group]Run build-script\necho workflow source\n[logs truncated]\n##[error]Process completed with exit code 1.",
+			want:     []string{"Failure details:", "Error: Process completed with exit code 1."},
+			unwanted: []string{"workflow source"},
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -79,6 +168,49 @@ func TestFailureExtractsOrdinaryAndAggregateFailures(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestFailurePreservesActionableCommandGuidance(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		line string
+	}{
+		{name: "plain command", line: "bin/ci-summary"},
+		{name: "try command", line: "Try bin/ci-summary"},
+		{name: "run command", line: "Run bin/ci-summary for details"},
+		{name: "run tool", line: "Run go mod tidy"},
+		{name: "try tool", line: "Try npm ci"},
+		{name: "use tool", line: "Use make generate"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var out bytes.Buffer
+			Failure(&out, FailureOptions{Check: gh.Observation{Identity: gh.Identity{Context: "build"}}, Logs: test.line})
+			if !strings.Contains(out.String(), "Suggested next step:\n  "+test.line) {
+				t.Fatalf("output missing actionable guidance:\n%s", out.String())
+			}
+			if strings.Count(out.String(), test.line) != 1 {
+				t.Fatalf("guidance should appear once:\n%s", out.String())
+			}
+		})
+	}
+}
+
+func TestFailureDoesNotPrioritizeDiagnosticPathsAsGuidance(t *testing.T) {
+	logs := strings.Join([]string{
+		"./src/one.c:10: error: first failure",
+		"./src/two.c:20: error: second failure",
+		"./src/three.c:30: error: third failure",
+		"Recommended: run bin/ci-summary",
+	}, "\n")
+	var out bytes.Buffer
+	Failure(&out, FailureOptions{Check: gh.Observation{Identity: gh.Identity{Context: "build"}}, Logs: logs})
+	got := out.String()
+	if !strings.Contains(got, "Suggested next step:\n  Recommended: run bin/ci-summary") {
+		t.Fatalf("output did not prioritize genuine guidance:\n%s", got)
+	}
+	if strings.Contains(got, "Suggested next step:\n  ./src/") {
+		t.Fatalf("output treated a diagnostic path as guidance:\n%s", got)
 	}
 }
 

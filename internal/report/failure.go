@@ -11,11 +11,17 @@ import (
 )
 
 var (
-	ansiPattern      = regexp.MustCompile(`\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1b\\))`)
-	timestampPattern = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z\s*`)
-	urlPattern       = regexp.MustCompile(`https?://[^\s<>()]+`)
-	guidancePattern  = regexp.MustCompile(`(?i)\b(?:run|try|use|next step|recommended|recommendation)\b`)
-	signalPattern    = regexp.MustCompile(`(?i)\b(?:error|fail(?:ed|ure)?|fatal|panic|exception|timed out)\b`)
+	ansiPattern         = regexp.MustCompile(`\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1b\\))`)
+	caretANSIPattern    = regexp.MustCompile(`\^\[\[[0-?]*[ -/]*[@-~]`)
+	timestampPattern    = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z\s*`)
+	actionsCommand      = regexp.MustCompile(`##\[[^]]*\]`)
+	urlPattern          = regexp.MustCompile(`https?://[^\s<>()]+`)
+	explicitGuidance    = regexp.MustCompile(`(?i)\b(?:next steps?|recommended|recommendation|you (?:can|should)|please (?:run|use))\b`)
+	commandGuidance     = regexp.MustCompile(`(?i)^(?:run|try|use)\s+\S`)
+	actionableCommand   = regexp.MustCompile(`(?:^|\s)(?:\./|bin/|scripts?/)[[:alnum:]_./-]+`)
+	plainActionable     = regexp.MustCompile(`^(?:bin/|scripts?/)[[:alnum:]_./-]+(?:\s|$)`)
+	signalPattern       = regexp.MustCompile(`(?i)\b(?:error|fail(?:ed|ure)?|fatal|panic|exception|timed out)\b`)
+	failureAffixPattern = regexp.MustCompile(`(?i)^(?:error\s*:\s*|fail(?:ed|ure)?\s+)|\s+(?:error|fail(?:ed|ure)?)(?:\s+child)?\s*$`)
 )
 
 // FailureOptions contains the already bounded failed-check log and enough
@@ -45,13 +51,14 @@ func Failure(out io.Writer, options FailureOptions) {
 			}
 		}
 	}
-	if guidance := guidanceLines(lines); len(guidance) > 0 {
+	guidance := guidanceLines(lines)
+	if len(guidance) > 0 {
 		fmt.Fprintln(out, "\nSuggested next step:")
 		for _, line := range guidance {
 			fmt.Fprintf(out, "  %s\n", line)
 		}
 	}
-	if signals := signalLines(lines); len(signals) > 0 {
+	if signals := signalLines(lines, guidance); len(signals) > 0 {
 		fmt.Fprintln(out, "\nFailure details:")
 		for _, line := range signals {
 			fmt.Fprintf(out, "  %s\n", line)
@@ -83,9 +90,12 @@ func failedJobs(lines []string, checkURL string) []failedJob {
 		if url == "" || url == checkURL {
 			continue
 		}
-		name := strings.TrimSpace(strings.TrimSuffix(line, urls[len(urls)-1]))
-		name = strings.Trim(name, " -*:[]()")
-		name = signalPattern.ReplaceAllString(name, "")
+		name := strings.TrimSpace(strings.Replace(line, urls[len(urls)-1], "", 1))
+		name = strings.TrimRight(name, " \t()")
+		if slash := strings.LastIndex(name, " / "); slash >= 0 {
+			name = name[slash+3:]
+		}
+		name = strings.TrimSpace(failureAffixPattern.ReplaceAllString(name, ""))
 		name = strings.Trim(name, " -*:[]()")
 		if name == "" || seen[url] {
 			continue
@@ -100,20 +110,43 @@ func failedJobs(lines []string, checkURL string) []failedJob {
 }
 
 func guidanceLines(lines []string) []string {
-	return selectLines(lines, 3, func(line string) bool {
-		return guidancePattern.MatchString(line) || strings.Contains(line, "bin/ci-summary")
+	const limit = 3
+	result := selectLines(lines, limit, func(line string) bool {
+		return guidanceCandidate(line) && actionableCommand.MatchString(line)
 	})
+	seen := make(map[string]bool, len(result))
+	for _, line := range result {
+		seen[line] = true
+	}
+	for _, line := range selectLines(lines, limit, guidanceCandidate) {
+		if len(result) == limit {
+			break
+		}
+		if !seen[line] {
+			result = append(result, line)
+			seen[line] = true
+		}
+	}
+	return result
 }
 
-func signalLines(lines []string) []string {
+func guidanceCandidate(line string) bool {
+	return !implementationLine(line) && (explicitGuidance.MatchString(line) || commandGuidance.MatchString(line) || plainActionable.MatchString(line))
+}
+
+func signalLines(lines, guidance []string) []string {
 	const limit = 8
+	guidanceSet := make(map[string]bool, len(guidance))
+	for _, line := range guidance {
+		guidanceSet[line] = true
+	}
 	selected := map[int]bool{}
 	for i, line := range lines {
-		if !signalPattern.MatchString(line) || urlPattern.MatchString(line) {
+		if !signalPattern.MatchString(line) || urlPattern.MatchString(line) || guidanceSet[line] || implementationLine(line) {
 			continue
 		}
 		for j := max(0, i-1); j <= min(len(lines)-1, i+1); j++ {
-			if lines[j] != "" && !urlPattern.MatchString(lines[j]) && !guidancePattern.MatchString(lines[j]) {
+			if lines[j] != "" && !urlPattern.MatchString(lines[j]) && !guidanceSet[lines[j]] && !implementationLine(lines[j]) {
 				selected[j] = true
 			}
 		}
@@ -130,6 +163,20 @@ func signalLines(lines []string) []string {
 		}
 	}
 	return result
+}
+
+func implementationLine(line string) bool {
+	trimmed := strings.TrimSpace(line)
+	return strings.Contains(trimmed, "failed_jobs") || aggregateStatusLine(trimmed) ||
+		strings.HasPrefix(trimmed, "if [[") || strings.HasPrefix(trimmed, "if [") ||
+		strings.HasPrefix(trimmed, "for ") || strings.HasPrefix(trimmed, "while ")
+}
+
+func aggregateStatusLine(line string) bool {
+	structured := strings.HasPrefix(line, "{") || strings.HasPrefix(line, "[")
+	hasIdentity := strings.Contains(line, `"name"`) || strings.Contains(line, `"job"`)
+	hasStatus := strings.Contains(line, `"conclusion"`) || strings.Contains(line, `"status"`)
+	return structured && hasIdentity && hasStatus
 }
 
 func selectLines(lines []string, limit int, match func(string) bool) []string {
@@ -150,8 +197,25 @@ func selectLines(lines []string, limit int, match func(string) bool) []string {
 func cleanLines(logs string) []string {
 	raw := strings.Split(strings.ReplaceAll(logs, "\r\n", "\n"), "\n")
 	result := make([]string, 0, len(raw))
+	inCommandPreview := false
 	for _, line := range raw {
 		line = ansiPattern.ReplaceAllString(line, "")
+		line = caretANSIPattern.ReplaceAllString(line, "")
+		if strings.TrimSpace(line) == "[logs truncated]" {
+			inCommandPreview = false
+			result = append(result, "")
+			continue
+		}
+		groupRun := strings.Contains(line, "##[group]Run ")
+		endGroup := strings.Contains(line, "##[endgroup]")
+		commandPreview := inCommandPreview || groupRun
+		if groupRun {
+			inCommandPreview = true
+		}
+		if endGroup {
+			inCommandPreview = false
+		}
+		errorAnnotation := strings.Contains(line, "##[error]")
 		fields := strings.Split(line, "\t")
 		for i, field := range fields {
 			trimmed := strings.TrimSpace(field)
@@ -162,6 +226,12 @@ func cleanLines(logs string) []string {
 		}
 		line = timestampPattern.ReplaceAllString(strings.TrimSpace(line), "")
 		line = strings.TrimSpace(strings.TrimPrefix(line, "UNKNOWN STEP"))
+		line = strings.TrimSpace(actionsCommand.ReplaceAllString(line, ""))
+		if commandPreview {
+			line = ""
+		} else if errorAnnotation && !signalPattern.MatchString(line) {
+			line = "Error: " + line
+		}
 		result = append(result, line)
 	}
 	return result

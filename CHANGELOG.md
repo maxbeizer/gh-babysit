@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+## [0.1.6] - 2026-10-20
+
+### Fixed
+
+- Clean noisy GitHub Actions aggregate-check output while preserving structured errors, annotation-only failures, child-job links, and actionable workflow guidance.
+
 ## [0.1.5] - 2026-10-20
 
 ### Fixed
@@ -46,7 +52,8 @@ All notable changes to this project will be documented in this file. The format 
 - Copilot CLI adapter contract and isolation spike for future diagnosis and fix workflows.
 - Typed exit codes, core domain contracts, subprocess and clock seams, and capability checks.
 
-[Unreleased]: https://github.com/maxbeizer/gh-babysit/compare/v0.1.5...HEAD
+[Unreleased]: https://github.com/maxbeizer/gh-babysit/compare/v0.1.6...HEAD
+[0.1.6]: https://github.com/maxbeizer/gh-babysit/compare/v0.1.5...v0.1.6
 [0.1.5]: https://github.com/maxbeizer/gh-babysit/compare/v0.1.4...v0.1.5
 [0.1.4]: https://github.com/maxbeizer/gh-babysit/compare/v0.1.3...v0.1.4
 [0.1.3]: https://github.com/maxbeizer/gh-babysit/compare/v0.1.2...v0.1.3
