@@ -17,6 +17,7 @@ const (
 type Error struct {
 	Category Category
 	Err      error
+	Reported bool
 }
 
 func (e *Error) Error() string {
@@ -27,6 +28,13 @@ func (e *Error) Error() string {
 }
 func (e *Error) Unwrap() error               { return e.Err }
 func New(category Category, err error) error { return &Error{Category: category, Err: err} }
+func NewReported(category Category, err error) error {
+	return &Error{Category: category, Err: err, Reported: true}
+}
+func IsReported(err error) bool {
+	var e *Error
+	return errors.As(err, &e) && e.Reported
+}
 func Code(err error) int {
 	if err == nil {
 		return 0

@@ -15,6 +15,7 @@ gh babysit [<pr-number-or-url>] [--auto]
 
 Flags:
   --auto                  permit confident fixes, validation, commits, and pushes
+  --show-logs             print the bounded raw failed-check log
   --agent-command string  agent executable (default: copilot)
   --poll-interval duration (default: 15s)
   --appearance-timeout duration (default: 10m)

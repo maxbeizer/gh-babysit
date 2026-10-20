@@ -18,7 +18,9 @@ func run(ctx context.Context, args []string) int {
 	cmd := app.NewCommand(version)
 	cmd.SetArgs(args)
 	if err := cmd.ExecuteContext(ctx); err != nil {
-		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		if !exitcode.IsReported(err) {
+			fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		}
 		var categorized *exitcode.Error
 		if errors.As(err, &categorized) {
 			return exitcode.Code(err)
