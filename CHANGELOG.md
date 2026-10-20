@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+## [0.1.5] - 2026-10-20
+
+### Fixed
+
+- Continue Codespaces required-check discovery when GitHub recomputes pull request merge state between paginated GraphQL responses, while withholding authoritative completion until every page is clean.
+
 ## [0.1.4] - 2026-10-20
 
 ### Fixed
@@ -40,7 +46,8 @@ All notable changes to this project will be documented in this file. The format 
 - Copilot CLI adapter contract and isolation spike for future diagnosis and fix workflows.
 - Typed exit codes, core domain contracts, subprocess and clock seams, and capability checks.
 
-[Unreleased]: https://github.com/maxbeizer/gh-babysit/compare/v0.1.4...HEAD
+[Unreleased]: https://github.com/maxbeizer/gh-babysit/compare/v0.1.5...HEAD
+[0.1.5]: https://github.com/maxbeizer/gh-babysit/compare/v0.1.4...v0.1.5
 [0.1.4]: https://github.com/maxbeizer/gh-babysit/compare/v0.1.3...v0.1.4
 [0.1.3]: https://github.com/maxbeizer/gh-babysit/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/maxbeizer/gh-babysit/compare/v0.1.1...v0.1.2

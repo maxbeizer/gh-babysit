@@ -41,7 +41,7 @@ func (g GraphQLRequirements) Requirements(ctx context.Context, req Request) (Pul
 
 	decoder := json.NewDecoder(bytes.NewReader(result.Stdout))
 	var requirements []Requirement
-	var mergeState string
+	allPagesClean := true
 	pages := 0
 	for {
 		var response struct {
@@ -89,10 +89,7 @@ func (g GraphQLRequirements) Requirements(ctx context.Context, req Request) (Pul
 		if pr == nil || pr.HeadRefOID != req.SHA {
 			return PullRequestRequirementResult{}, errors.New("GraphQL required-check query did not resolve the recorded PR head")
 		}
-		if mergeState != "" && mergeState != pr.MergeStateStatus {
-			return PullRequestRequirementResult{}, errors.New("PR merge state changed while reading required checks")
-		}
-		mergeState = pr.MergeStateStatus
+		allPagesClean = allPagesClean && pr.MergeStateStatus == "CLEAN"
 		object := response.Data.Repository.Object
 		if object == nil || object.OID == "" {
 			return PullRequestRequirementResult{}, errors.New("GraphQL required-check query did not resolve the recorded commit")
@@ -131,5 +128,5 @@ func (g GraphQLRequirements) Requirements(ctx context.Context, req Request) (Pul
 	}
 	// CLEAN is GitHub's positive signal that no branch-protection requirement,
 	// including an uncreated required check, blocks this exact PR head.
-	return PullRequestRequirementResult{Requirements: mergeRequirements(requirements), CompletionAuthoritative: mergeState == "CLEAN"}, nil
+	return PullRequestRequirementResult{Requirements: mergeRequirements(requirements), CompletionAuthoritative: allPagesClean}, nil
 }
