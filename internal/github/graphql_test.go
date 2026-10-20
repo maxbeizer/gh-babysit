@@ -39,6 +39,19 @@ func TestGraphQLRequirementsRequiresCleanMergeStateForCompletion(t *testing.T) {
 	}
 }
 
+func TestGraphQLRequirementsToleratesMergeStateChangesAcrossPages(t *testing.T) {
+	runner := runnerFunc(func(context.Context, process.Request) (process.Result, error) {
+		return process.Result{Stdout: []byte(
+			`{"data":{"repository":{"pullRequest":{"headRefOid":"abc","mergeStateStatus":"UNKNOWN"},"object":{"oid":"abc","statusCheckRollup":{"contexts":{"nodes":[{"__typename":"CheckRun","name":"build","isRequired":true}],"pageInfo":{"hasNextPage":true,"endCursor":"cursor"}}}}}}}` + "\n" +
+				`{"data":{"repository":{"pullRequest":{"headRefOid":"abc","mergeStateStatus":"CLEAN"},"object":{"oid":"abc","statusCheckRollup":{"contexts":{"nodes":[{"__typename":"CheckRun","name":"test","isRequired":true}],"pageInfo":{"hasNextPage":false}}}}}}}`,
+		)}, nil
+	})
+	result, err := (GraphQLRequirements{Runner: runner}).Requirements(context.Background(), Request{Owner: "o", Repository: "r", SHA: "abc", PullRequestNumber: 7})
+	if err != nil || result.CompletionAuthoritative || len(result.Requirements) != 2 {
+		t.Fatalf("result=%+v error=%v", result, err)
+	}
+}
+
 func TestGraphQLRequirementsRejectsDifferentResolvedSHA(t *testing.T) {
 	runner := runnerFunc(func(context.Context, process.Request) (process.Result, error) {
 		return process.Result{Stdout: []byte(`{"data":{"repository":{"pullRequest":{"headRefOid":"abc","mergeStateStatus":"BLOCKED"},"object":{"oid":"different","statusCheckRollup":{"contexts":{"nodes":[],"pageInfo":{"hasNextPage":false}}}}}}}`)}, nil
