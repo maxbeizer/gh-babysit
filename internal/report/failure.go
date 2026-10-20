@@ -11,14 +11,15 @@ import (
 )
 
 var (
-	ansiPattern         = regexp.MustCompile(`\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1b\\))`)
-	caretANSIPattern    = regexp.MustCompile(`\^\[\[[0-?]*[ -/]*[@-~]`)
-	timestampPattern    = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z\s*`)
-	actionsCommand      = regexp.MustCompile(`##\[[^]]*\](?:[^\r\n]*?::)?`)
-	urlPattern          = regexp.MustCompile(`https?://[^\s<>()]+`)
-	explicitGuidance    = regexp.MustCompile(`(?i)\b(?:next steps?|recommended|recommendation|you (?:can|should)|please (?:run|use))\b`)
-	signalPattern       = regexp.MustCompile(`(?i)\b(?:error|fail(?:ed|ure)?|fatal|panic|exception|timed out)\b`)
-	failureAffixPattern = regexp.MustCompile(`(?i)^(?:error\s*:\s*|fail(?:ed|ure)?\s+)|\s+(?:error|fail(?:ed|ure)?)(?:\s+child)?\s*$`)
+	ansiPattern          = regexp.MustCompile(`\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1b\\))`)
+	caretANSIPattern     = regexp.MustCompile(`\^\[\[[0-?]*[ -/]*[@-~]`)
+	timestampPattern     = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z\s*`)
+	actionsCommand       = regexp.MustCompile(`##\[[^]]*\]`)
+	aggregateDataPattern = regexp.MustCompile(`^[{[]\s*(?:["'{[]|$)`)
+	urlPattern           = regexp.MustCompile(`https?://[^\s<>()]+`)
+	explicitGuidance     = regexp.MustCompile(`(?i)\b(?:next steps?|recommended|recommendation|you (?:can|should)|please (?:run|use))\b`)
+	signalPattern        = regexp.MustCompile(`(?i)\b(?:error|fail(?:ed|ure)?|fatal|panic|exception|timed out)\b`)
+	failureAffixPattern  = regexp.MustCompile(`(?i)^(?:error\s*:\s*|fail(?:ed|ure)?\s+)|\s+(?:error|fail(?:ed|ure)?)(?:\s+child)?\s*$`)
 )
 
 // FailureOptions contains the already bounded failed-check log and enough
@@ -140,8 +141,7 @@ func signalLines(lines []string) []string {
 
 func implementationLine(line string) bool {
 	trimmed := strings.TrimSpace(line)
-	return strings.Contains(trimmed, "failed_jobs") ||
-		strings.HasPrefix(trimmed, "{") || strings.HasPrefix(trimmed, "[") ||
+	return strings.Contains(trimmed, "failed_jobs") || aggregateDataPattern.MatchString(trimmed) ||
 		strings.HasPrefix(trimmed, "if [[") || strings.HasPrefix(trimmed, "if [") ||
 		strings.HasPrefix(trimmed, "for ") || strings.HasPrefix(trimmed, "while ") ||
 		strings.HasPrefix(trimmed, "Run ")
