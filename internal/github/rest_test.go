@@ -87,6 +87,19 @@ func TestGHAPIUsesLatestPaginatedFailureMetadata(t *testing.T) {
 	}
 }
 
+func TestGHAPIDoesNotPairEarlierPageMetadataWithLatestFailure(t *testing.T) {
+	client := GHAPI{Runner: runnerFunc(func(context.Context, process.Request) (process.Result, error) {
+		stdout := "HTTP/2.0 200 OK\r\nRetry-After: 3\r\n\r\n[]\nHTTP/2.0 429 Too Many Requests\r\n\r\n{}\n"
+		return process.Result{Stdout: []byte(stdout)}, errors.New("exit status 1")
+	})}
+	_, err := client.Get(context.Background(), "endpoint")
+	var limited *RateLimitError
+	var status *HTTPStatusError
+	if errors.As(err, &limited) || !errors.As(err, &status) || status.Status != 429 {
+		t.Fatalf("error=%v", err)
+	}
+}
+
 func TestGHAPIDoesNotRetryPermission403WithResetHeader(t *testing.T) {
 	client := GHAPI{Runner: runnerFunc(func(context.Context, process.Request) (process.Result, error) {
 		return process.Result{Stdout: []byte("HTTP/2.0 403 Forbidden\r\nX-RateLimit-Remaining: 42\r\nX-RateLimit-Reset: 99\r\n\r\n{}\n")}, errors.New("exit status 1")

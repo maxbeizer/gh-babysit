@@ -67,9 +67,9 @@ func (c GHAPI) Get(ctx context.Context, endpoint string) ([]json.RawMessage, err
 	result, err := c.Runner.Run(ctx, process.Request{Name: "gh", Args: args})
 	if err != nil {
 		message := strings.TrimSpace(string(append(append([]byte(nil), result.Stdout...), result.Stderr...)))
-		if status := statusFromGHError(message); status != 0 {
+		if status, response := latestHTTPResponse(message); status != 0 {
 			httpErr := &HTTPStatusError{Status: status, Body: message}
-			if retry, reset, ok := rateLimitMetadata(message); ok && isRateLimited(status, message) {
+			if retry, reset, ok := rateLimitMetadata(response); ok && isRateLimited(status, response) {
 				return nil, &RateLimitError{HTTPStatusError: httpErr, RetryAfterDuration: retry, ResetAt: reset}
 			}
 			return nil, httpErr
@@ -312,12 +312,18 @@ var (
 )
 
 func statusFromGHError(message string) int {
-	matches := ghStatusPattern.FindAllStringSubmatch(message, -1)
-	if len(matches) == 0 {
-		return 0
-	}
-	status, _ := strconv.Atoi(matches[len(matches)-1][1])
+	status, _ := latestHTTPResponse(message)
 	return status
+}
+
+func latestHTTPResponse(message string) (int, string) {
+	matches := ghStatusPattern.FindAllStringSubmatchIndex(message, -1)
+	if len(matches) == 0 {
+		return 0, ""
+	}
+	match := matches[len(matches)-1]
+	status, _ := strconv.Atoi(message[match[2]:match[3]])
+	return status, message[match[0]:]
 }
 
 func rateLimitMetadata(message string) (time.Duration, time.Time, bool) {

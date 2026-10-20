@@ -115,8 +115,8 @@ func (s *WatchSource) qualifiedRepository() string {
 
 func watchCommandError(operation string, result process.Result, err error) error {
 	message := strings.TrimSpace(string(result.Stderr))
-	status := statusFromGHError(message)
-	if retry, reset, ok := rateLimitMetadata(message); ok && isRateLimited(status, message) {
+	status, response := latestHTTPResponse(message)
+	if retry, reset, ok := rateLimitMetadata(response); ok && isRateLimited(status, response) {
 		return &RateLimitError{HTTPStatusError: &HTTPStatusError{Status: status, Body: message}, RetryAfterDuration: retry, ResetAt: reset}
 	}
 	if status != 0 {
