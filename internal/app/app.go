@@ -15,6 +15,7 @@ import (
 	gh "github.com/maxbeizer/gh-babysit/internal/github"
 	"github.com/maxbeizer/gh-babysit/internal/preflight"
 	"github.com/maxbeizer/gh-babysit/internal/process"
+	"github.com/maxbeizer/gh-babysit/internal/report"
 	"github.com/maxbeizer/gh-babysit/internal/watcher"
 	"github.com/spf13/cobra"
 )
@@ -41,6 +42,7 @@ func ParsePullRequestArgument(value string) (PullRequestArgument, error) {
 type Options struct {
 	PullRequest                              string
 	Auto                                     bool
+	ShowLogs                                 bool
 	AgentCommand                             string
 	PollInterval, AppearanceTimeout, Timeout time.Duration
 }
@@ -59,11 +61,12 @@ func qualifiedRepository(host, repository string) string {
 func NewCommandWithRunner(version string, runner process.Runner) *cobra.Command {
 	o := Options{}
 	cmd := &cobra.Command{
-		Use:          "gh-babysit [<pr-number-or-url>]",
-		Short:        "Watch required pull request checks and safely delegate fixes",
-		Version:      version,
-		Args:         cobra.MaximumNArgs(1),
-		SilenceUsage: true,
+		Use:           "gh-babysit [<pr-number-or-url>]",
+		Short:         "Watch required pull request checks and safely delegate fixes",
+		Version:       version,
+		Args:          cobra.MaximumNArgs(1),
+		SilenceUsage:  true,
+		SilenceErrors: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if len(args) == 1 {
 				if _, err := ParsePullRequestArgument(args[0]); err != nil {
@@ -94,16 +97,17 @@ func NewCommandWithRunner(version string, runner process.Runner) *cobra.Command 
 				return exitcode.New(exitcode.SafetyStop, err)
 			}
 			if watchResult.State == watcher.Failed {
-				fmt.Fprintf(cmd.OutOrStdout(), "Required check %s failed (%s).\nLogs:\n%s\n", watchResult.Failed.Context, watchResult.Failed.URL, watchResult.Logs)
+				report.Failure(cmd.OutOrStdout(), report.FailureOptions{Check: watchResult.Failed, Repository: qualifiedRepository(result.PullRequest.Host, result.PullRequest.Repository), Logs: watchResult.Logs, ShowLogs: o.ShowLogs})
 				if watchResult.RerunSuggestion != "" {
-					fmt.Fprintf(cmd.OutOrStdout(), "Safe suggestion (not executed): %s\n", watchResult.RerunSuggestion)
+					fmt.Fprintf(cmd.OutOrStdout(), "\nSafe suggestion (not executed):\n  %s\n", watchResult.RerunSuggestion)
 				}
-				return exitcode.New(exitcode.NotFixable, fmt.Errorf("required check %s failed", watchResult.Failed.Context))
+				return exitcode.NewReported(exitcode.NotFixable, fmt.Errorf("required check %s failed", watchResult.Failed.Context))
 			}
 			return nil
 		},
 	}
 	cmd.Flags().BoolVar(&o.Auto, "auto", false, "permit confident fixes, validation, commits, and pushes")
+	cmd.Flags().BoolVar(&o.ShowLogs, "show-logs", false, "print the bounded raw failed-check log")
 	cmd.Flags().StringVar(&o.AgentCommand, "agent-command", "copilot", "agent executable")
 	cmd.Flags().DurationVar(&o.PollInterval, "poll-interval", 15*time.Second, "required-check polling interval")
 	cmd.Flags().DurationVar(&o.AppearanceTimeout, "appearance-timeout", 10*time.Minute, "required-suite appearance timeout")
