@@ -173,6 +173,9 @@ func TestFailurePreservesActionableCommandGuidance(t *testing.T) {
 		{name: "plain command", line: "bin/ci-summary"},
 		{name: "try command", line: "Try bin/ci-summary"},
 		{name: "run command", line: "Run bin/ci-summary for details"},
+		{name: "run tool", line: "Run go mod tidy"},
+		{name: "try tool", line: "Try npm ci"},
+		{name: "use tool", line: "Use make generate"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			var out bytes.Buffer
@@ -180,7 +183,28 @@ func TestFailurePreservesActionableCommandGuidance(t *testing.T) {
 			if !strings.Contains(out.String(), "Suggested next step:\n  "+test.line) {
 				t.Fatalf("output missing actionable guidance:\n%s", out.String())
 			}
+			if strings.Count(out.String(), test.line) != 1 {
+				t.Fatalf("guidance should appear once:\n%s", out.String())
+			}
 		})
+	}
+}
+
+func TestFailureDoesNotPrioritizeDiagnosticPathsAsGuidance(t *testing.T) {
+	logs := strings.Join([]string{
+		"./src/one.c:10: error: first failure",
+		"./src/two.c:20: error: second failure",
+		"./src/three.c:30: error: third failure",
+		"Recommended: run bin/ci-summary",
+	}, "\n")
+	var out bytes.Buffer
+	Failure(&out, FailureOptions{Check: gh.Observation{Identity: gh.Identity{Context: "build"}}, Logs: logs})
+	got := out.String()
+	if !strings.Contains(got, "Suggested next step:\n  Recommended: run bin/ci-summary") {
+		t.Fatalf("output did not prioritize genuine guidance:\n%s", got)
+	}
+	if strings.Contains(got, "Suggested next step:\n  ./src/") {
+		t.Fatalf("output treated a diagnostic path as guidance:\n%s", got)
 	}
 }
 
