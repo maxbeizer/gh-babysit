@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/signal"
 	"syscall"
@@ -18,9 +19,7 @@ func run(ctx context.Context, args []string) int {
 	cmd := app.NewCommand(version)
 	cmd.SetArgs(args)
 	if err := cmd.ExecuteContext(ctx); err != nil {
-		if !exitcode.IsReported(err) {
-			fmt.Fprintf(os.Stderr, "error: %v\n", err)
-		}
+		reportError(os.Stderr, err)
 		var categorized *exitcode.Error
 		if errors.As(err, &categorized) {
 			return exitcode.Code(err)
@@ -31,6 +30,12 @@ func run(ctx context.Context, args []string) int {
 		return exitcode.Code(exitcode.New(exitcode.Usage, err))
 	}
 	return exitcode.Code(context.Cause(ctx))
+}
+
+func reportError(out io.Writer, err error) {
+	if !exitcode.IsReported(err) {
+		fmt.Fprintf(out, "error: %v\n", err)
+	}
 }
 
 func main() {

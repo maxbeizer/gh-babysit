@@ -43,6 +43,45 @@ func TestFailureSummarizesActionsLogs(t *testing.T) {
 	}
 }
 
+func TestFailureExtractsOrdinaryAndAggregateFailures(t *testing.T) {
+	tests := []struct {
+		name     string
+		logs     string
+		want     []string
+		unwanted []string
+	}{
+		{
+			name:     "ordinary failure with limited context",
+			logs:     "runner setup\ncompiling package\nError: assertion failed\nexpected true, got false\nuploading artifacts",
+			want:     []string{"compiling package", "Error: assertion failed", "expected true, got false"},
+			unwanted: []string{"runner setup", "uploading artifacts"},
+		},
+		{
+			name:     "aggregate failure with cleaned child link",
+			logs:     "results\tUNKNOWN STEP\t2025-01-02T03:04:06Z \x1b[31mFAILED child-job https://github.com/acme/widgets/actions/runs/1/job/10\x1b[0m",
+			want:     []string{"Failed jobs:", "- child-job", "actions/runs/1/job/10"},
+			unwanted: []string{"UNKNOWN STEP", "2025-01-02", "\x1b[31m"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var out bytes.Buffer
+			Failure(&out, FailureOptions{Check: gh.Observation{Identity: gh.Identity{Context: "build"}, URL: "https://checks.example/1"}, Logs: tt.logs})
+			got := out.String()
+			for _, want := range tt.want {
+				if !strings.Contains(got, want) {
+					t.Errorf("output missing %q:\n%s", want, got)
+				}
+			}
+			for _, unwanted := range tt.unwanted {
+				if strings.Contains(got, unwanted) {
+					t.Errorf("output contains %q:\n%s", unwanted, got)
+				}
+			}
+		})
+	}
+}
+
 func TestFailureHandlesUnavailableAndExplicitRawLogs(t *testing.T) {
 	for _, test := range []struct {
 		name     string

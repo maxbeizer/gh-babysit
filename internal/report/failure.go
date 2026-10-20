@@ -106,9 +106,30 @@ func guidanceLines(lines []string) []string {
 }
 
 func signalLines(lines []string) []string {
-	return selectLines(lines, 8, func(line string) bool {
-		return signalPattern.MatchString(line) && len(urlPattern.FindAllString(line, -1)) == 0
-	})
+	const limit = 8
+	selected := map[int]bool{}
+	for i, line := range lines {
+		if !signalPattern.MatchString(line) || urlPattern.MatchString(line) {
+			continue
+		}
+		for j := max(0, i-1); j <= min(len(lines)-1, i+1); j++ {
+			if lines[j] != "" && !urlPattern.MatchString(lines[j]) && !guidancePattern.MatchString(lines[j]) {
+				selected[j] = true
+			}
+		}
+	}
+	result, seen := make([]string, 0, limit), map[string]bool{}
+	for i, line := range lines {
+		if !selected[i] || seen[line] {
+			continue
+		}
+		seen[line] = true
+		result = append(result, line)
+		if len(result) == limit {
+			break
+		}
+	}
+	return result
 }
 
 func selectLines(lines []string, limit int, match func(string) bool) []string {

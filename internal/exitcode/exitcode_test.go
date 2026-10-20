@@ -6,6 +6,26 @@ import (
 	"testing"
 )
 
+func TestIsReported(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{name: "ordinary", err: New(Usage, errors.New("bad"))},
+		{name: "reported", err: NewReported(NotFixable, errors.New("failed")), want: true},
+		{name: "wrapped reported", err: fmt.Errorf("wrapped: %w", NewReported(NotFixable, errors.New("failed"))), want: true},
+		{name: "untyped", err: errors.New("bad")},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := IsReported(tt.err); got != tt.want {
+				t.Fatalf("IsReported() = %t, want %t", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestCode(t *testing.T) {
 	tests := []struct {
 		name string
