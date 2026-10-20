@@ -312,11 +312,12 @@ func normalizeStatus(state string) State {
 }
 
 var (
-	actionsRunPattern = regexp.MustCompile(`/actions/runs/([0-9]+)(?:/|$)`)
-	ghStatusPattern   = regexp.MustCompile(`(?i)HTTP(?:/[0-9.]+)?[ :]([0-9]{3})`)
-	retryAfterPattern = regexp.MustCompile(`(?im)retry-after:\s*([0-9]+)`)
-	rateResetPattern  = regexp.MustCompile(`(?im)x-ratelimit-reset:\s*([0-9]+)`)
-	rateRemainPattern = regexp.MustCompile(`(?im)x-ratelimit-remaining:\s*([0-9]+)`)
+	actionsRunPattern     = regexp.MustCompile(`/actions/runs/([0-9]+)(?:/|$)`)
+	fullHTTPStatusPattern = regexp.MustCompile(`(?im)^HTTP/[0-9.]+[ :]([0-9]{3})`)
+	ghStatusPattern       = regexp.MustCompile(`(?i)HTTP(?:/[0-9.]+)?[ :]([0-9]{3})`)
+	retryAfterPattern     = regexp.MustCompile(`(?im)retry-after:\s*([0-9]+)`)
+	rateResetPattern      = regexp.MustCompile(`(?im)x-ratelimit-reset:\s*([0-9]+)`)
+	rateRemainPattern     = regexp.MustCompile(`(?im)x-ratelimit-remaining:\s*([0-9]+)`)
 )
 
 func statusFromGHError(message string) int {
@@ -325,7 +326,13 @@ func statusFromGHError(message string) int {
 }
 
 func latestHTTPResponse(message string) (int, string) {
-	matches := ghStatusPattern.FindAllStringSubmatchIndex(message, -1)
+	// Prefer complete response blocks emitted by `gh api --include`. The CLI may
+	// append a summary such as `gh: ... (HTTP 403)` after the response; selecting
+	// that later shorthand would discard the headers needed to classify the error.
+	matches := fullHTTPStatusPattern.FindAllStringSubmatchIndex(message, -1)
+	if len(matches) == 0 {
+		matches = ghStatusPattern.FindAllStringSubmatchIndex(message, -1)
+	}
 	if len(matches) == 0 {
 		return 0, ""
 	}
