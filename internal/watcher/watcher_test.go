@@ -168,16 +168,17 @@ func TestRunReturnsActionableFailureWithBoundedLogs(t *testing.T) {
 
 func TestRunSuggestsOnlyConservativelySafeReruns(t *testing.T) {
 	for _, test := range []struct {
-		name, conclusion, want string
+		name, conclusion, workflowConclusion, want string
 	}{
-		{name: "cancelled", conclusion: "cancelled", want: "gh run rerun 77 --failed --repo acme/widgets"},
-		{name: "deterministic failure", conclusion: "failure"},
-		{name: "timed out may be deterministic", conclusion: "timed_out"},
+		{name: "cancelled", conclusion: "cancelled", workflowConclusion: "cancelled", want: "gh run rerun 77 --failed --repo acme/widgets"},
+		{name: "deterministic failure", conclusion: "failure", workflowConclusion: "failure"},
+		{name: "timed out may be deterministic", conclusion: "timed_out", workflowConclusion: "timed_out"},
+		{name: "cancelled job in failed workflow", conclusion: "cancelled", workflowConclusion: "failure"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			runID := int64(77)
 			failed := obs("build", gh.StateFailure)
-			failed.Source, failed.WorkflowRunID, failed.Conclusion = gh.SourceCheckRun, &runID, test.conclusion
+			failed.Source, failed.WorkflowRunID, failed.Conclusion, failed.WorkflowConclusion = gh.SourceCheckRun, &runID, test.conclusion, test.workflowConclusion
 			source := &fakeSource{snapshots: []gh.Snapshot{snapshot([]gh.Requirement{req("build")}, failed)}, logs: "logs"}
 			result, err := Run(context.Background(), source, &fakeClock{}, Options{RecordedSHA: "sha", Repository: "acme/widgets", PollInterval: time.Second, AppearanceTimeout: time.Minute, Timeout: time.Hour})
 			if err != nil || result.RerunSuggestion != test.want {

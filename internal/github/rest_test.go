@@ -129,8 +129,8 @@ func TestRESTProviderNormalizesAuthoritativeSnapshot(t *testing.T) {
 		"rules/branches":         {fixture(t, "rules.json")},
 		"check-runs":             {fixture(t, "check-runs.json")},
 		"statuses":               {fixture(t, "statuses.json")},
-		"actions/runs/500":       {json.RawMessage(`{"run_attempt":1}`)},
-		"actions/runs/501":       {json.RawMessage(`{"run_attempt":2}`)},
+		"actions/runs/500":       {json.RawMessage(`{"run_attempt":1,"conclusion":"failure"}`)},
+		"actions/runs/501":       {json.RawMessage(`{"run_attempt":2,"conclusion":"success"}`)},
 	}}
 	got, err := NewProvider(RESTBackend{API: api}).Discover(context.Background(), Request{Owner: "o", Repository: "r", BaseBranch: "main", SHA: "abc"})
 	if err != nil {
@@ -154,7 +154,7 @@ func TestRESTProviderNormalizesAuthoritativeSnapshot(t *testing.T) {
 		t.Fatalf("observations = %d, want latest three identities/sources: %+v", len(got.Observations), got.Observations)
 	}
 	build := got.Observations[0]
-	if build.Context != "ci/build" || build.ID != 101 || build.State != StateSuccess || build.Attempt != 2 || build.WorkflowRunID == nil || *build.WorkflowRunID != 501 {
+	if build.Context != "ci/build" || build.ID != 101 || build.State != StateSuccess || build.Attempt != 2 || build.WorkflowConclusion != "success" || build.WorkflowRunID == nil || *build.WorkflowRunID != 501 {
 		t.Fatalf("rerun was not normalized to latest attempt: %+v", build)
 	}
 	legacy := got.Observations[1]

@@ -126,7 +126,7 @@ func Run(ctx context.Context, source Source, timer clock.Clock, options Options)
 			if currentHead != options.RecordedSHA {
 				return Result{}, fmt.Errorf("safety stop: PR head changed from %s to %s while reading failed logs", options.RecordedSHA, currentHead)
 			}
-			if observation.Source == gh.SourceCheckRun && observation.WorkflowRunID != nil && observation.Conclusion == "cancelled" && options.Repository != "" {
+			if observation.Source == gh.SourceCheckRun && observation.WorkflowRunID != nil && observation.Conclusion == "cancelled" && observation.WorkflowConclusion == "cancelled" && options.Repository != "" {
 				result.RerunSuggestion = fmt.Sprintf("gh run rerun %d --failed --repo %s", *observation.WorkflowRunID, options.Repository)
 			}
 			print(options.Output, "failed %s: %s\n", observation.Context, observation.URL)

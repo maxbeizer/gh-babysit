@@ -177,7 +177,7 @@ func (b RESTBackend) checkRuns(ctx context.Context, req Request) ([]Observation,
 		return nil, err
 	}
 	var result []Observation
-	attempts := make(map[int64]int)
+	workflowRuns := make(map[int64]workflowRunMetadata)
 	for _, page := range pages {
 		var response struct {
 			CheckRuns []struct {
@@ -199,51 +199,58 @@ func (b RESTBackend) checkRuns(ctx context.Context, req Request) ([]Observation,
 		for _, run := range response.CheckRuns {
 			appID := run.App.ID
 			workflowRunID := workflowRunFromURL(run.DetailsURL)
-			attempt := 0
+			metadata := workflowRunMetadata{}
 			if workflowRunID != nil {
 				var ok bool
-				attempt, ok = attempts[*workflowRunID]
+				metadata, ok = workflowRuns[*workflowRunID]
 				if !ok {
-					attempt, err = b.workflowRunAttempt(ctx, req, *workflowRunID)
+					metadata, err = b.workflowRun(ctx, req, *workflowRunID)
 					if err != nil {
 						return nil, fmt.Errorf("read workflow run %d for check run %d: %w", *workflowRunID, run.ID, err)
 					}
-					attempts[*workflowRunID] = attempt
+					workflowRuns[*workflowRunID] = metadata
 				}
 			}
 			result = append(result, Observation{
-				Identity:      Identity{Context: run.Name, AppID: &appID},
-				Source:        SourceCheckRun,
-				ID:            run.ID,
-				State:         normalizeCheckRun(run.Status, run.Conclusion),
-				RawState:      firstNonempty(run.Conclusion, run.Status),
-				Conclusion:    run.Conclusion,
-				URL:           run.DetailsURL,
-				WorkflowRunID: workflowRunID,
-				Attempt:       attempt,
-				StartedAt:     parseTime(run.StartedAt), CompletedAt: parseTime(run.CompletedAt),
+				Identity:           Identity{Context: run.Name, AppID: &appID},
+				Source:             SourceCheckRun,
+				ID:                 run.ID,
+				State:              normalizeCheckRun(run.Status, run.Conclusion),
+				RawState:           firstNonempty(run.Conclusion, run.Status),
+				Conclusion:         run.Conclusion,
+				WorkflowConclusion: metadata.Conclusion,
+				URL:                run.DetailsURL,
+				WorkflowRunID:      workflowRunID,
+				Attempt:            metadata.Attempt,
+				StartedAt:          parseTime(run.StartedAt), CompletedAt: parseTime(run.CompletedAt),
 			})
 		}
 	}
 	return result, nil
 }
 
-func (b RESTBackend) workflowRunAttempt(ctx context.Context, req Request, id int64) (int, error) {
+type workflowRunMetadata struct {
+	Attempt    int
+	Conclusion string
+}
+
+func (b RESTBackend) workflowRun(ctx context.Context, req Request, id int64) (workflowRunMetadata, error) {
 	endpoint := fmt.Sprintf("repos/%s/%s/actions/runs/%d", escape(req.Owner), escape(req.Repository), id)
 	pages, err := b.API.Get(ctx, endpoint)
 	if err != nil {
-		return 0, err
+		return workflowRunMetadata{}, err
 	}
 	var run struct {
-		RunAttempt int `json:"run_attempt"`
+		RunAttempt int    `json:"run_attempt"`
+		Conclusion string `json:"conclusion"`
 	}
 	if err := decodeSingle(pages, &run); err != nil {
-		return 0, err
+		return workflowRunMetadata{}, err
 	}
 	if run.RunAttempt < 1 {
-		return 0, errors.New("workflow run omitted run_attempt")
+		return workflowRunMetadata{}, errors.New("workflow run omitted run_attempt")
 	}
-	return run.RunAttempt, nil
+	return workflowRunMetadata{Attempt: run.RunAttempt, Conclusion: run.Conclusion}, nil
 }
 
 func (b RESTBackend) statuses(ctx context.Context, req Request) ([]Observation, error) {
