@@ -123,6 +123,50 @@ func TestGHAPIPreservesHTTPStatus(t *testing.T) {
 	}
 }
 
+func TestGHAPISelectsBestHTTPErrorResponse(t *testing.T) {
+	tests := []struct {
+		name       string
+		stdout     string
+		stderr     string
+		wantStatus int
+		wantHeader string
+	}{
+		{
+			name: "included response before trailing summary",
+			stdout: "HTTP/2.0 403 Forbidden\r\nX-Accepted-GitHub-Permissions: administration=read\r\n\r\n" +
+				`{"message":"Resource not accessible by integration","status":"403"}`,
+			stderr:     "gh: Resource not accessible by integration (HTTP 403)\n",
+			wantStatus: 403,
+			wantHeader: "administration=read",
+		},
+		{
+			name:       "shorthand only",
+			stderr:     "gh: Branch not protected (HTTP 404)\n",
+			wantStatus: 404,
+		},
+		{
+			name: "latest included response",
+			stdout: "HTTP/2.0 200 OK\r\nX-Page: first\r\n\r\n[]\n" +
+				"HTTP/2.0 403 Forbidden\r\nX-Accepted-GitHub-Permissions: administration=read\r\n\r\n{}\n",
+			stderr:     "gh: forbidden (HTTP 403)\n",
+			wantStatus: 403,
+			wantHeader: "administration=read",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			client := GHAPI{Runner: runnerFunc(func(context.Context, process.Request) (process.Result, error) {
+				return process.Result{Stdout: []byte(test.stdout), Stderr: []byte(test.stderr)}, errors.New("exit status 1")
+			})}
+			_, err := client.Get(context.Background(), "endpoint")
+			var status *HTTPStatusError
+			if !errors.As(err, &status) || status.Status != test.wantStatus || status.Headers["x-accepted-github-permissions"] != test.wantHeader {
+				t.Fatalf("error = %#v, want status %d and permission header %q", err, test.wantStatus, test.wantHeader)
+			}
+		})
+	}
+}
+
 func TestRESTProviderNormalizesAuthoritativeSnapshot(t *testing.T) {
 	api := fixtureAPI{responses: map[string][]json.RawMessage{
 		"required_status_checks": {fixture(t, "classic.json")},
