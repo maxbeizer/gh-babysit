@@ -18,6 +18,7 @@ var (
 	aggregateDataPattern = regexp.MustCompile(`^[{[]\s*(?:["'{[]|$)`)
 	urlPattern           = regexp.MustCompile(`https?://[^\s<>()]+`)
 	explicitGuidance     = regexp.MustCompile(`(?i)\b(?:next steps?|recommended|recommendation|you (?:can|should)|please (?:run|use))\b`)
+	actionableCommand    = regexp.MustCompile(`(?:^|\s)(?:\./|bin/|scripts?/)[[:alnum:]_./-]+`)
 	signalPattern        = regexp.MustCompile(`(?i)\b(?:error|fail(?:ed|ure)?|fatal|panic|exception|timed out)\b`)
 	failureAffixPattern  = regexp.MustCompile(`(?i)^(?:error\s*:\s*|fail(?:ed|ure)?\s+)|\s+(?:error|fail(?:ed|ure)?)(?:\s+child)?\s*$`)
 )
@@ -107,9 +108,26 @@ func failedJobs(lines []string, checkURL string) []failedJob {
 }
 
 func guidanceLines(lines []string) []string {
-	return selectLines(lines, 3, func(line string) bool {
-		return !implementationLine(line) && (explicitGuidance.MatchString(line) || strings.Contains(line, "bin/ci-summary"))
+	const limit = 3
+	result := selectLines(lines, limit, func(line string) bool {
+		return !implementationLine(line) && explicitGuidance.MatchString(line) && actionableCommand.MatchString(line)
 	})
+	seen := make(map[string]bool, len(result))
+	for _, line := range result {
+		seen[line] = true
+	}
+	for _, line := range selectLines(lines, limit, func(line string) bool {
+		return !implementationLine(line) && explicitGuidance.MatchString(line)
+	}) {
+		if len(result) == limit {
+			break
+		}
+		if !seen[line] {
+			result = append(result, line)
+			seen[line] = true
+		}
+	}
+	return result
 }
 
 func signalLines(lines []string) []string {

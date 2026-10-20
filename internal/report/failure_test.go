@@ -64,7 +64,10 @@ func TestFailureSummarizesRealAggregateLogShape(t *testing.T) {
 				`golden-jobs-results\tUNKNOWN STEP\t2026-02-02T18:05:06.000Z ##[error]golden-jobs (...) / github-reposd-multitenant failed child (https://github.com/github/github/actions/runs/39332730470/job/118334691274)`,
 				`golden-jobs-results\tUNKNOWN STEP\t2026-02-02T18:05:07.000Z ##[error]golden-jobs (...) / github-reposd failed child (https://github.com/github/github/actions/runs/39332730470/job/118334691128)`,
 				`golden-jobs-results\tUNKNOWN STEP\t2026-02-02T18:05:08.000Z {"name":"github-reposd","conclusion":"failure"},`,
-				`golden-jobs-results\tUNKNOWN STEP\t2026-02-02T18:05:09.000Z Recommendation: run bin/ci-summary for failure details`,
+				`golden-jobs-results\tUNKNOWN STEP\t2026-02-02T18:05:09.000Z Recommended: inspect the workflow run`,
+				`golden-jobs-results\tUNKNOWN STEP\t2026-02-02T18:05:10.000Z Next step: inspect the aggregate output`,
+				`golden-jobs-results\tUNKNOWN STEP\t2026-02-02T18:05:11.000Z You should contact the workflow owner`,
+				`golden-jobs-results\tUNKNOWN STEP\t2026-02-02T18:05:12.000Z Recommendation: run bin/ci-summary for failure details`,
 			}, "\n"), `\t`, "\t")
 			var out bytes.Buffer
 			Failure(&out, FailureOptions{
