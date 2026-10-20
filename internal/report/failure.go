@@ -11,16 +11,15 @@ import (
 )
 
 var (
-	ansiPattern          = regexp.MustCompile(`\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1b\\))`)
-	caretANSIPattern     = regexp.MustCompile(`\^\[\[[0-?]*[ -/]*[@-~]`)
-	timestampPattern     = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z\s*`)
-	actionsCommand       = regexp.MustCompile(`##\[[^]]*\]`)
-	aggregateDataPattern = regexp.MustCompile(`^[{[]\s*(?:["'{[]|$)`)
-	urlPattern           = regexp.MustCompile(`https?://[^\s<>()]+`)
-	explicitGuidance     = regexp.MustCompile(`(?i)\b(?:next steps?|recommended|recommendation|you (?:can|should)|please (?:run|use))\b`)
-	actionableCommand    = regexp.MustCompile(`(?:^|\s)(?:\./|bin/|scripts?/)[[:alnum:]_./-]+`)
-	signalPattern        = regexp.MustCompile(`(?i)\b(?:error|fail(?:ed|ure)?|fatal|panic|exception|timed out)\b`)
-	failureAffixPattern  = regexp.MustCompile(`(?i)^(?:error\s*:\s*|fail(?:ed|ure)?\s+)|\s+(?:error|fail(?:ed|ure)?)(?:\s+child)?\s*$`)
+	ansiPattern         = regexp.MustCompile(`\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1b\\))`)
+	caretANSIPattern    = regexp.MustCompile(`\^\[\[[0-?]*[ -/]*[@-~]`)
+	timestampPattern    = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z\s*`)
+	actionsCommand      = regexp.MustCompile(`##\[[^]]*\]`)
+	urlPattern          = regexp.MustCompile(`https?://[^\s<>()]+`)
+	explicitGuidance    = regexp.MustCompile(`(?i)\b(?:next steps?|recommended|recommendation|you (?:can|should)|please (?:run|use))\b`)
+	actionableCommand   = regexp.MustCompile(`(?:^|\s)(?:\./|bin/|scripts?/)[[:alnum:]_./-]+`)
+	signalPattern       = regexp.MustCompile(`(?i)\b(?:error|fail(?:ed|ure)?|fatal|panic|exception|timed out)\b`)
+	failureAffixPattern = regexp.MustCompile(`(?i)^(?:error\s*:\s*|fail(?:ed|ure)?\s+)|\s+(?:error|fail(?:ed|ure)?)(?:\s+child)?\s*$`)
 )
 
 // FailureOptions contains the already bounded failed-check log and enough
@@ -110,7 +109,7 @@ func failedJobs(lines []string, checkURL string) []failedJob {
 func guidanceLines(lines []string) []string {
 	const limit = 3
 	result := selectLines(lines, limit, func(line string) bool {
-		return !implementationLine(line) && explicitGuidance.MatchString(line) && actionableCommand.MatchString(line)
+		return !implementationLine(line) && actionableCommand.MatchString(line)
 	})
 	seen := make(map[string]bool, len(result))
 	for _, line := range result {
@@ -159,10 +158,16 @@ func signalLines(lines []string) []string {
 
 func implementationLine(line string) bool {
 	trimmed := strings.TrimSpace(line)
-	return strings.Contains(trimmed, "failed_jobs") || aggregateDataPattern.MatchString(trimmed) ||
+	return strings.Contains(trimmed, "failed_jobs") || aggregateStatusLine(trimmed) ||
 		strings.HasPrefix(trimmed, "if [[") || strings.HasPrefix(trimmed, "if [") ||
-		strings.HasPrefix(trimmed, "for ") || strings.HasPrefix(trimmed, "while ") ||
-		strings.HasPrefix(trimmed, "Run ")
+		strings.HasPrefix(trimmed, "for ") || strings.HasPrefix(trimmed, "while ")
+}
+
+func aggregateStatusLine(line string) bool {
+	structured := strings.HasPrefix(line, "{") || strings.HasPrefix(line, "[")
+	hasIdentity := strings.Contains(line, `"name"`) || strings.Contains(line, `"job"`)
+	hasStatus := strings.Contains(line, `"conclusion"`) || strings.Contains(line, `"status"`)
+	return structured && hasIdentity && hasStatus
 }
 
 func selectLines(lines []string, limit int, match func(string) bool) []string {
@@ -186,6 +191,8 @@ func cleanLines(logs string) []string {
 	for _, line := range raw {
 		line = ansiPattern.ReplaceAllString(line, "")
 		line = caretANSIPattern.ReplaceAllString(line, "")
+		groupRun := strings.Contains(line, "##[group]Run ")
+		errorAnnotation := strings.Contains(line, "##[error]")
 		fields := strings.Split(line, "\t")
 		for i, field := range fields {
 			trimmed := strings.TrimSpace(field)
@@ -197,6 +204,11 @@ func cleanLines(logs string) []string {
 		line = timestampPattern.ReplaceAllString(strings.TrimSpace(line), "")
 		line = strings.TrimSpace(strings.TrimPrefix(line, "UNKNOWN STEP"))
 		line = strings.TrimSpace(actionsCommand.ReplaceAllString(line, ""))
+		if groupRun {
+			line = ""
+		} else if errorAnnotation && !signalPattern.MatchString(line) {
+			line = "Error: " + line
+		}
 		result = append(result, line)
 	}
 	return result

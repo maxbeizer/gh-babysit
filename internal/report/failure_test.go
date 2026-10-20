@@ -67,7 +67,7 @@ func TestFailureSummarizesRealAggregateLogShape(t *testing.T) {
 				`golden-jobs-results\tUNKNOWN STEP\t2026-02-02T18:05:09.000Z Recommended: inspect the workflow run`,
 				`golden-jobs-results\tUNKNOWN STEP\t2026-02-02T18:05:10.000Z Next step: inspect the aggregate output`,
 				`golden-jobs-results\tUNKNOWN STEP\t2026-02-02T18:05:11.000Z You should contact the workflow owner`,
-				`golden-jobs-results\tUNKNOWN STEP\t2026-02-02T18:05:12.000Z Recommendation: run bin/ci-summary for failure details`,
+				`golden-jobs-results\tUNKNOWN STEP\t2026-02-02T18:05:12.000Z Run bin/ci-summary for failure details`,
 			}, "\n"), `\t`, "\t")
 			var out bytes.Buffer
 			Failure(&out, FailureOptions{
@@ -84,7 +84,7 @@ func TestFailureSummarizesRealAggregateLogShape(t *testing.T) {
 				"Required check failed: golden-jobs-results",
 				"- github-reposd-multitenant\n    https://github.com/github/github/actions/runs/39332730470/job/118334691274",
 				"- github-reposd\n    https://github.com/github/github/actions/runs/39332730470/job/118334691128",
-				"Suggested next step:\n  Recommendation: run bin/ci-summary for failure details",
+				"Suggested next step:\n  Run bin/ci-summary for failure details",
 				"gh run view 39332730470 --log-failed --repo github/github",
 			} {
 				if !strings.Contains(got, want) {
@@ -129,6 +129,17 @@ func TestFailureExtractsOrdinaryAndAggregateFailures(t *testing.T) {
 			logs:     "results\tUNKNOWN STEP\t2025-01-02T03:04:06Z \x1b[31mFAILED child-job https://github.com/acme/widgets/actions/runs/1/job/10\x1b[0m",
 			want:     []string{"Failed jobs:", "- child-job", "actions/runs/1/job/10"},
 			unwanted: []string{"UNKNOWN STEP", "2025-01-02", "\x1b[31m"},
+		},
+		{
+			name: "structured JSON error remains visible",
+			logs: `{"level":"error","message":"database connection refused"}`,
+			want: []string{"Failure details:", `{"level":"error","message":"database connection refused"}`},
+		},
+		{
+			name:     "error annotation supplies failure signal",
+			logs:     "##[error]Process completed with exit code 1.",
+			want:     []string{"Failure details:", "Error: Process completed with exit code 1."},
+			unwanted: []string{"##[error]"},
 		},
 	}
 	for _, tt := range tests {
