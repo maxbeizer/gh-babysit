@@ -133,11 +133,11 @@ func signalLines(lines []string) []string {
 	const limit = 8
 	selected := map[int]bool{}
 	for i, line := range lines {
-		if !signalPattern.MatchString(line) || urlPattern.MatchString(line) || implementationLine(line) {
+		if !signalPattern.MatchString(line) || urlPattern.MatchString(line) || actionableCommand.MatchString(line) || implementationLine(line) {
 			continue
 		}
 		for j := max(0, i-1); j <= min(len(lines)-1, i+1); j++ {
-			if lines[j] != "" && !urlPattern.MatchString(lines[j]) && !explicitGuidance.MatchString(lines[j]) && !implementationLine(lines[j]) {
+			if lines[j] != "" && !urlPattern.MatchString(lines[j]) && !explicitGuidance.MatchString(lines[j]) && !actionableCommand.MatchString(lines[j]) && !implementationLine(lines[j]) {
 				selected[j] = true
 			}
 		}
@@ -188,10 +188,19 @@ func selectLines(lines []string, limit int, match func(string) bool) []string {
 func cleanLines(logs string) []string {
 	raw := strings.Split(strings.ReplaceAll(logs, "\r\n", "\n"), "\n")
 	result := make([]string, 0, len(raw))
+	inCommandPreview := false
 	for _, line := range raw {
 		line = ansiPattern.ReplaceAllString(line, "")
 		line = caretANSIPattern.ReplaceAllString(line, "")
 		groupRun := strings.Contains(line, "##[group]Run ")
+		endGroup := strings.Contains(line, "##[endgroup]")
+		commandPreview := inCommandPreview || groupRun
+		if groupRun {
+			inCommandPreview = true
+		}
+		if endGroup {
+			inCommandPreview = false
+		}
 		errorAnnotation := strings.Contains(line, "##[error]")
 		fields := strings.Split(line, "\t")
 		for i, field := range fields {
@@ -204,7 +213,7 @@ func cleanLines(logs string) []string {
 		line = timestampPattern.ReplaceAllString(strings.TrimSpace(line), "")
 		line = strings.TrimSpace(strings.TrimPrefix(line, "UNKNOWN STEP"))
 		line = strings.TrimSpace(actionsCommand.ReplaceAllString(line, ""))
-		if groupRun {
+		if commandPreview {
 			line = ""
 		} else if errorAnnotation && !signalPattern.MatchString(line) {
 			line = "Error: " + line

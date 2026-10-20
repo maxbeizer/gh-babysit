@@ -57,8 +57,12 @@ func TestFailureSummarizesRealAggregateLogShape(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			logs := strings.ReplaceAll(strings.Join([]string{
 				"golden-jobs-results\tUNKNOWN STEP\t2026-02-02T18:05:01.000Z ##[group]Run echo \"time_in_ms=$(date +%s%3N)\" >> $GITHUB_OUTPUT",
+				`golden-jobs-results\tUNKNOWN STEP\t2026-02-02T18:05:01.100Z echo "Recommendation: run bin/ci-summary from workflow source"`,
+				"golden-jobs-results\tUNKNOWN STEP\t2026-02-02T18:05:01.200Z ##[endgroup]",
 				"golden-jobs-results\tUNKNOWN STEP\t2026-02-02T18:05:02.000Z ##[group]Run github/internal-actions@main",
+				"golden-jobs-results\tUNKNOWN STEP\t2026-02-02T18:05:02.100Z ##[endgroup]",
 				"golden-jobs-results\tUNKNOWN STEP\t2026-02-02T18:05:03.000Z ##[group]Run RUNNER_WORK_DIR=\"...\"",
+				"golden-jobs-results\tUNKNOWN STEP\t2026-02-02T18:05:03.100Z ##[endgroup]",
 				"golden-jobs-results\tUNKNOWN STEP\t2026-02-02T18:05:04.000Z " + tt.ansi + `if [[ -n "$failed_jobs" ]]; then` + "\x1b[0m",
 				`golden-jobs-results\tUNKNOWN STEP\t2026-02-02T18:05:05.000Z   failed_jobs="$(jq -r '.jobs[] | select(.conclusion == "failure")')"`,
 				`golden-jobs-results\tUNKNOWN STEP\t2026-02-02T18:05:06.000Z ##[error]golden-jobs (...) / github-reposd-multitenant failed child (https://github.com/github/github/actions/runs/39332730470/job/118334691274)`,
@@ -93,7 +97,7 @@ func TestFailureSummarizesRealAggregateLogShape(t *testing.T) {
 			}
 			for _, unwanted := range []string{
 				"##[group]", "##[error]", "##[]", "UNKNOWN STEP", tt.unwanted,
-				"time_in_ms", "github/internal-actions@main", "RUNNER_WORK_DIR", "failed_jobs", `"conclusion":"failure"`,
+				"time_in_ms", "github/internal-actions@main", "RUNNER_WORK_DIR", "workflow source", "failed_jobs", `"conclusion":"failure"`,
 			} {
 				if strings.Contains(got, unwanted) {
 					t.Errorf("output contains %q:\n%s", unwanted, got)
@@ -156,6 +160,25 @@ func TestFailureExtractsOrdinaryAndAggregateFailures(t *testing.T) {
 				if strings.Contains(got, unwanted) {
 					t.Errorf("output contains %q:\n%s", unwanted, got)
 				}
+			}
+		})
+	}
+}
+
+func TestFailurePreservesActionableCommandGuidance(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		line string
+	}{
+		{name: "plain command", line: "bin/ci-summary"},
+		{name: "try command", line: "Try bin/ci-summary"},
+		{name: "run command", line: "Run bin/ci-summary for details"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var out bytes.Buffer
+			Failure(&out, FailureOptions{Check: gh.Observation{Identity: gh.Identity{Context: "build"}}, Logs: test.line})
+			if !strings.Contains(out.String(), "Suggested next step:\n  "+test.line) {
+				t.Fatalf("output missing actionable guidance:\n%s", out.String())
 			}
 		})
 	}
