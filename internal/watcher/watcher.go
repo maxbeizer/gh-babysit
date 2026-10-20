@@ -107,6 +107,13 @@ func Run(ctx context.Context, source Source, timer clock.Clock, options Options)
 			if err := source.VerifyLocal(watchCtx); err != nil {
 				return Result{}, operationError("verify local baseline", err, options.Timeout)
 			}
+			currentHead, err := call(watchCtx, timer, deadline, source.HeadSHA)
+			if err != nil {
+				return Result{}, operationError("read PR head after failed logs", err, options.Timeout)
+			}
+			if currentHead != options.RecordedSHA {
+				return Result{}, fmt.Errorf("safety stop: PR head changed from %s to %s while reading failed logs", options.RecordedSHA, currentHead)
+			}
 			if observation.Source == gh.SourceCheckRun && observation.WorkflowRunID != nil && observation.Conclusion == "cancelled" && options.Repository != "" {
 				result.RerunSuggestion = fmt.Sprintf("gh run rerun %d --failed --repo %s", *observation.WorkflowRunID, options.Repository)
 			}

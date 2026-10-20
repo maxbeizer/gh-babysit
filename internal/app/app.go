@@ -80,6 +80,9 @@ func NewCommandWithRunner(version string, runner process.Runner) *cobra.Command 
 				if errors.Is(err, watcher.ErrTimeout) {
 					return exitcode.New(exitcode.Timeout, err)
 				}
+				if gh.IsAuthenticationError(err) {
+					return exitcode.New(exitcode.Usage, err)
+				}
 				return exitcode.New(exitcode.SafetyStop, err)
 			}
 			if watchResult.State == watcher.Failed {

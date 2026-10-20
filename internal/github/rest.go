@@ -29,6 +29,12 @@ func (e *HTTPStatusError) Error() string {
 	return fmt.Sprintf("GitHub API returned HTTP %d: %s", e.Status, e.Body)
 }
 
+// IsAuthenticationError reports whether a watch-time GitHub failure requires reauthentication.
+func IsAuthenticationError(err error) bool {
+	var status *HTTPStatusError
+	return errors.As(err, &status) && status.Status == 401
+}
+
 // RateLimitError carries GitHub's server-provided retry timing.
 type RateLimitError struct {
 	*HTTPStatusError

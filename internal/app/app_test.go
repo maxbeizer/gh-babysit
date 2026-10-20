@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/maxbeizer/gh-babysit/internal/exitcode"
 	"github.com/maxbeizer/gh-babysit/internal/process"
 )
 
@@ -88,6 +89,22 @@ func TestCommandAcceptsDocumentedSurface(t *testing.T) {
 		t.Fatalf("output = %q", out.String())
 	}
 }
+func TestCommandPreservesWatchTimeAuthenticationClassification(t *testing.T) {
+	runner := runnerFunc(func(ctx context.Context, request process.Request) (process.Result, error) {
+		command := request.Name + " " + strings.Join(request.Args, " ")
+		if strings.Contains(command, "rules/branches") {
+			return process.Result{Stdout: []byte("HTTP/2.0 401 Unauthorized\n\n{}\n"), Stderr: []byte("gh: authentication required\n")}, fmt.Errorf("exit status 1")
+		}
+		return successfulPreflightRunner(ctx, request)
+	})
+	cmd := NewCommandWithRunner("dev", runner)
+	cmd.SetArgs([]string{"123", "--poll-interval", "1ms", "--timeout", "1s"})
+	err := cmd.Execute()
+	if err == nil || exitcode.Code(err) != 2 {
+		t.Fatalf("error=%v code=%d", err, exitcode.Code(err))
+	}
+}
+
 func TestCommandRejectsExtraArguments(t *testing.T) {
 	cmd := NewCommand("dev")
 	cmd.SetArgs([]string{"1", "2"})

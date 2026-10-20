@@ -167,6 +167,15 @@ func TestRunSuggestsOnlyConservativelySafeReruns(t *testing.T) {
 	}
 }
 
+func TestRunRechecksRemoteHeadAfterFailedLogs(t *testing.T) {
+	failed := obs("build", gh.StateFailure)
+	source := &fakeSource{heads: []string{"sha", "sha", "other"}, snapshots: []gh.Snapshot{snapshot([]gh.Requirement{req("build")}, failed)}, logs: "logs"}
+	_, err := Run(context.Background(), source, &fakeClock{}, Options{RecordedSHA: "sha", PollInterval: time.Second, AppearanceTimeout: time.Minute, Timeout: time.Hour})
+	if err == nil || !strings.Contains(err.Error(), "while reading failed logs") {
+		t.Fatalf("error=%v", err)
+	}
+}
+
 func TestRunReportsUnavailableLogsWithoutGuessingARerun(t *testing.T) {
 	failed := obs("external", gh.StateFailure)
 	source := &fakeSource{snapshots: []gh.Snapshot{snapshot([]gh.Requirement{req("external")}, failed)}, logErr: errors.New("logs unavailable")}
