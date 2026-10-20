@@ -167,6 +167,64 @@ func TestRESTProviderNormalizesAuthoritativeSnapshot(t *testing.T) {
 	}
 }
 
+type fallbackBackend struct {
+	requirements []Requirement
+	err          error
+	calls        int
+}
+
+func (f *fallbackBackend) Requirements(_ context.Context, req Request) (PullRequestRequirementResult, error) {
+	f.calls++
+	return PullRequestRequirementResult{Requirements: f.requirements, CompletionAuthoritative: len(f.requirements) > 0}, f.err
+}
+
+func TestProviderFallsBackOnlyForConfigurationPermission403(t *testing.T) {
+	permission := &HTTPStatusError{Status: 403, Body: "Resource not accessible by integration", Headers: map[string]string{"x-accepted-github-permissions": "administration=read"}}
+	api := fixtureAPI{responses: map[string][]json.RawMessage{
+		"check-runs": {json.RawMessage(`{"total_count":1,"check_runs":[{"id":1,"name":"build","status":"completed","conclusion":"success","app":{"id":15368}}]}`)},
+		"statuses":   {json.RawMessage(`[]`)},
+	}, errors: map[string]error{"required_status_checks": permission}}
+	appID := int64(15368)
+	fallback := &fallbackBackend{requirements: []Requirement{{Identity: Identity{Context: "build", AppID: &appID}, Authorities: []string{"pull_request_rollup"}}}}
+
+	got, err := NewHybridProvider(RESTBackend{API: api}, fallback).Discover(context.Background(), Request{Owner: "o", Repository: "r", BaseBranch: "main", SHA: "abc", PullRequestNumber: 7})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fallback.calls != 1 || !got.RequirementsAuthoritative || len(got.Requirements) != 1 || len(got.Observations) != 1 {
+		t.Fatalf("fallback snapshot=%+v calls=%d", got, fallback.calls)
+	}
+
+	for _, err := range []error{
+		&HTTPStatusError{Status: 403, Body: "Resource not accessible by integration; administration=read"},
+		&HTTPStatusError{Status: 403, Body: "forbidden"},
+		&HTTPStatusError{Status: 401, Body: "bad credentials"},
+		&RateLimitError{HTTPStatusError: &HTTPStatusError{Status: 403, Body: "rate limit"}},
+	} {
+		fallback.calls = 0
+		api.errors["required_status_checks"] = err
+		_, gotErr := NewHybridProvider(RESTBackend{API: api}, fallback).Discover(context.Background(), Request{Owner: "o", Repository: "r", BaseBranch: "main", SHA: "abc", PullRequestNumber: 7})
+		if gotErr == nil || fallback.calls != 0 {
+			t.Fatalf("error %v produced %v with %d fallback calls", err, gotErr, fallback.calls)
+		}
+	}
+}
+
+func TestFallbackEmptyRollupIsNotAuthoritativeZero(t *testing.T) {
+	permission := &HTTPStatusError{Status: 403, Body: "Resource not accessible by integration", Headers: map[string]string{"x-accepted-github-permissions": "administration=read"}}
+	api := fixtureAPI{responses: map[string][]json.RawMessage{
+		"check-runs": {json.RawMessage(`{"total_count":0,"check_runs":[]}`)},
+		"statuses":   {json.RawMessage(`[]`)},
+	}, errors: map[string]error{"required_status_checks": permission}}
+	got, err := NewHybridProvider(RESTBackend{API: api}, &fallbackBackend{}).Discover(context.Background(), Request{Owner: "o", Repository: "r", BaseBranch: "main", SHA: "abc", PullRequestNumber: 7})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.RequirementsAuthoritative || len(got.Requirements) != 0 {
+		t.Fatalf("empty fallback must remain indeterminate: %+v", got)
+	}
+}
+
 func TestProviderDistinguishesAuthoritativeZeroFromMissingSuite(t *testing.T) {
 	api := fixtureAPI{responses: map[string][]json.RawMessage{
 		"rules/branches": {json.RawMessage(`[]`)},

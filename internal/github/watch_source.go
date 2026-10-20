@@ -30,7 +30,8 @@ func NewWatchSource(runner process.Runner, root string, pr domain.PullRequest, b
 		return nil, fmt.Errorf("invalid repository %q", pr.Repository)
 	}
 	api := GHAPI{Runner: runner, Host: pr.Host}
-	return &WatchSource{Runner: runner, Root: root, PR: pr, Provider: NewProvider(RESTBackend{API: api}), BaselineHead: baselineHead, BaselineStatus: append([]byte(nil), baselineStatus...), BaselineIndex: append([]byte(nil), baselineIndex...)}, nil
+	fallback := GraphQLRequirements{Runner: runner, Host: pr.Host}
+	return &WatchSource{Runner: runner, Root: root, PR: pr, Provider: NewHybridProvider(RESTBackend{API: api}, fallback), BaselineHead: baselineHead, BaselineStatus: append([]byte(nil), baselineStatus...), BaselineIndex: append([]byte(nil), baselineIndex...)}, nil
 }
 
 func (s *WatchSource) VerifyLocal(ctx context.Context) error {
@@ -81,7 +82,7 @@ func (s *WatchSource) HeadSHA(ctx context.Context) (string, error) {
 
 func (s *WatchSource) Snapshot(ctx context.Context) (Snapshot, error) {
 	parts := strings.Split(s.PR.Repository, "/")
-	return s.Provider.Discover(ctx, Request{Owner: parts[0], Repository: parts[1], BaseBranch: s.PR.BaseBranch, SHA: s.PR.HeadSHA})
+	return s.Provider.Discover(ctx, Request{Owner: parts[0], Repository: parts[1], BaseBranch: s.PR.BaseBranch, SHA: s.PR.HeadSHA, PullRequestNumber: s.PR.Number})
 }
 
 func (s *WatchSource) FailedLogs(ctx context.Context, observation Observation, limit int) (string, error) {
@@ -120,7 +121,7 @@ func watchCommandError(operation string, result process.Result, err error) error
 		return &RateLimitError{HTTPStatusError: &HTTPStatusError{Status: status, Body: message}, RetryAfterDuration: retry, ResetAt: reset}
 	}
 	if status != 0 {
-		return fmt.Errorf("%s: %w", operation, &HTTPStatusError{Status: status, Body: message})
+		return fmt.Errorf("%s: %w", operation, &HTTPStatusError{Status: status, Body: message, Headers: responseHeaders(response)})
 	}
 	return fmt.Errorf("%s: %w: %s", operation, err, message)
 }

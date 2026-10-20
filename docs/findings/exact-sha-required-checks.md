@@ -16,6 +16,14 @@ A successful result marks configured requirements authoritative. Classic protect
 
 The provider returns configured identities separately from observations. Therefore an empty observation list cannot imply success when requirements are non-empty. The later watcher must still impose the design's appearance timeout and two-consecutive-poll success rule.
 
+## Codespaces integration-token fallback
+
+Codespaces commonly authenticates `gh` with an integration token that can read PRs and checks but receives `403 Resource not accessible by integration` and `X-Accepted-GitHub-Permissions: administration=read` from configuration endpoints. For that exact denial, the provider falls back to a paginated GraphQL query over the recorded commit's `statusCheckRollup`, using `CheckRun.isRequired(pullRequestNumber:)` and `StatusContext.isRequired(pullRequestNumber:)`. The query also returns the commit OID; a different or missing OID is rejected. The watcher additionally brackets discovery with PR-head reads.
+
+GraphQL requiredness is joined with the existing exact-SHA REST observations, which continue to provide App IDs, object IDs, attempts, workflow-run mappings, and log/rerun metadata. An authenticated query against PR 14 confirmed that GitHub accepts both `isRequired` fields and exposes a check run's app through `checkSuite.app.databaseId`.
+
+The fallback is intentionally narrow. It is selected only when the response body reports `Resource not accessible by integration` and the parsed `X-Accepted-GitHub-Permissions` response header includes `administration=read`; it is not selected for 401 responses, rate limits, generic 403 responses, or body text that merely resembles the header. Most importantly, an empty, optional-only, or partially populated rollup does **not** prove the complete configured set: another required check may not have been created yet. Fallback completion additionally requires GitHub's positive `PullRequest.mergeStateStatus=CLEAN` signal tied to the recorded head. Otherwise the watcher continues pending checks or stops safely with actionable Administration-read guidance. Authorized REST configuration discovery remains the only implemented path that directly establishes zero required checks.
+
 ## Identity and normalization
 
 A configured identity is `(context, app ID?)`. App-qualified and unqualified requirements are intentionally distinct. Classic `checks[].app_id` and ruleset `required_status_checks[].integration_id` supply the qualifier; commit statuses remain unqualified because their creator user ID is not a GitHub App ID.
@@ -49,7 +57,7 @@ It is not the production provider.
 
 ### GraphQL
 
-`Commit.statusCheckRollup.contexts` gives one exact-SHA union of `CheckRun` and `StatusContext`. In the authenticated exercise it exposed the check-run database ID and nested workflow-run ID. It did **not** expose `CheckRun.app` in this schema (`Field 'app' doesn't exist on type 'CheckRun'`), and it does not provide authoritative applicable classic/ruleset requirements. It is useful for observation convenience but cannot satisfy the identity/configuration contract alone.
+`Commit.statusCheckRollup.contexts` gives one exact-SHA union of `CheckRun` and `StatusContext`. In authenticated exercises it exposed check-run requiredness for a PR, the check-run database ID, nested workflow-run ID, and the GitHub App database ID through `CheckRun.checkSuite.app.databaseId` (there is no direct `CheckRun.app` field). It does not independently enumerate configured requirements that have not appeared, so `PullRequest.mergeStateStatus=CLEAN` is required as the positive completion signal; the rollup alone cannot prove either an empty or complete configuration.
 
 ### REST
 

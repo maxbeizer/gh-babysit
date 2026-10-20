@@ -83,6 +83,26 @@ func snapshot(required []gh.Requirement, observations ...gh.Observation) gh.Snap
 	return gh.Snapshot{SHA: "sha", RequirementsAuthoritative: true, Requirements: required, Observations: observations}
 }
 
+func TestRunWaitsUntilAppearanceTimeoutForIndeterminateFallback(t *testing.T) {
+	indeterminate := gh.Snapshot{SHA: "sha", RequirementsAuthoritative: false, IndeterminateReason: "Codespaces token needs Administration read permission"}
+	source := &fakeSource{snapshots: []gh.Snapshot{indeterminate}}
+	clock := &fakeClock{}
+	_, err := Run(context.Background(), source, clock, Options{RecordedSHA: "sha", PollInterval: 15 * time.Second, AppearanceTimeout: time.Second, Timeout: time.Hour})
+	if !errors.Is(err, ErrTimeout) || !strings.Contains(err.Error(), "Administration read") || source.calls != 1 || clock.now.Sub(time.Time{}) != time.Second {
+		t.Fatalf("error=%v calls=%d now=%s", err, source.calls, clock.now)
+	}
+}
+
+func TestRunDoesNotCompleteIndeterminateObservedRequiredSet(t *testing.T) {
+	indeterminate := snapshot([]gh.Requirement{req("build")}, obs("build", gh.StateSuccess))
+	indeterminate.RequirementsAuthoritative = false
+	indeterminate.IndeterminateReason = "Codespaces token cannot prove the complete required-check set"
+	_, err := Run(context.Background(), &fakeSource{snapshots: []gh.Snapshot{indeterminate}}, &fakeClock{}, Options{RecordedSHA: "sha", PollInterval: time.Second, AppearanceTimeout: time.Minute, Timeout: time.Hour})
+	if err == nil || !strings.Contains(err.Error(), "complete required-check set") {
+		t.Fatalf("error=%v", err)
+	}
+}
+
 func TestRunWaitsForAppearanceAndTwoStableSuccessfulSnapshots(t *testing.T) {
 	source := &fakeSource{snapshots: []gh.Snapshot{
 		snapshot([]gh.Requirement{req("build")}),
